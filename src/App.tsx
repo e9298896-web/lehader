@@ -225,7 +225,7 @@ export default function App() {
   const [creditInstallments, setCreditInstallments] =
     useState(1);
 
-  const [creditCheckout, setCreditCheckout] =
+  const [showCreditModal, setShowCreditModal] =
     useState(false);
 
   const [activePreOrderRef, setActivePreOrderRef] =
@@ -713,7 +713,7 @@ export default function App() {
 
     logActivity(`סיום עסקה — ${selectedCustomer?.name || "מזדמן"} ₪${effectiveFinalTotal.toFixed(2)}`);
     setCart([]);
-    setCreditCheckout(false);
+    setShowCreditModal(false);
     setCashReceived("");
     setCheckInstallments(1);
     setCreditInstallments(1);
@@ -2349,7 +2349,7 @@ const importBackup = async (
               <div style={{ borderTop: "2px solid #e2e8f0", paddingTop: "12px", flexShrink: 0 }}>
                 <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
                   {(["cash","check","credit"] as const).map(m => (
-                    <button key={m} onClick={() => { setPaymentMethod(m); setCreditCheckout(false); }}
+                    <button key={m} onClick={() => { setPaymentMethod(m); setShowCreditModal(false); }}
                       style={{ padding: "10px 14px", fontSize: "15px", fontWeight: 700, border: "2px solid", borderColor: paymentMethod === m ? "#2563eb" : "#e2e8f0", borderRadius: "12px", background: paymentMethod === m ? "#eff6ff" : "#f8fafc", color: paymentMethod === m ? "#2563eb" : "#6b7280", cursor: "pointer", whiteSpace: "nowrap" }}>
                       {m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : "אשראי"}
                     </button>
@@ -2380,8 +2380,8 @@ const importBackup = async (
                     style={{ flex: 1, padding: "12px", background: "#f59e0b", color: "white", border: "none", borderRadius: "12px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
                     ⏸ שמירה
                   </button>
-                  {paymentMethod === "credit" && !creditCheckout ? (
-                    <button onClick={() => setCreditCheckout(true)}
+                  {paymentMethod === "credit" ? (
+                    <button onClick={() => setShowCreditModal(true)}
                       style={{ flex: 2, padding: "12px", background: "#10b981", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>
                       מעבר לתשלום באשראי
                     </button>
@@ -2392,11 +2392,6 @@ const importBackup = async (
                     </button>
                   )}
                 </div>
-                {creditCheckout && (
-                  <div style={{ background: "#ecfdf5", borderRadius: "10px", padding: "6px 12px", fontSize: "13px", color: "#065f46", marginTop: "6px" }}>
-                    אשראי · ₪{finalTotal} · {creditInstallments} תשלומים
-                  </div>
-                )}
               </div>
             </div>
 
@@ -4595,6 +4590,43 @@ const importBackup = async (
           </div>
         );
       })()}
+      {showCreditModal && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(0,0,0,0.75)", zIndex: 2000,
+          display: "flex", alignItems: "center", justifyContent: "center"
+        }}>
+          <div style={{
+            background: "white", borderRadius: "20px",
+            width: "min(620px, 96vw)", height: "min(720px, 92vh)",
+            display: "flex", flexDirection: "column", overflow: "hidden",
+            boxShadow: "0 25px 60px rgba(0,0,0,0.4)"
+          }}>
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid #e2e8f0", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+              <span style={{ fontWeight: 700, fontSize: "18px" }}>
+                תשלום באשראי — ₪{effectiveFinalTotal.toFixed(2)} · {creditInstallments} תשלומים
+              </span>
+              <button onClick={() => setShowCreditModal(false)}
+                style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#6b7280", lineHeight: "1" }}>✕</button>
+            </div>
+            <iframe
+              src={`https://www.matara.pro/nedarimplus/online/?mosad=7005701&Zecut=${effectiveFinalTotal.toFixed(2)}&Tashlumim=${creditInstallments}`}
+              style={{ flex: 1, border: "none", width: "100%" }}
+              title="תשלום באשראי"
+            />
+            <div style={{ padding: "16px 20px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "12px", flexShrink: 0 }}>
+              <button onClick={() => setShowCreditModal(false)}
+                style={{ flex: 1, padding: "12px", background: "#f1f5f9", color: "#374151", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 600, cursor: "pointer" }}>
+                ביטול
+              </button>
+              <button onClick={completeSale}
+                style={{ flex: 2, padding: "12px", background: "#10b981", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>
+                ✓ תשלום בוצע — סיים עסקה
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </ErrorBoundary>
   );
 }
