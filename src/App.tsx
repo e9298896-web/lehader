@@ -228,6 +228,12 @@ export default function App() {
   const [showCreditModal, setShowCreditModal] =
     useState(false);
 
+  const [creditPaymentProcessing, setCreditPaymentProcessing] =
+    useState(false);
+
+  const [creditPaymentError, setCreditPaymentError] =
+    useState("");
+
   const [activePreOrderRef, setActivePreOrderRef] =
     useState<{ orderId: number; saleDayId: number } | null>(null);
 
@@ -718,6 +724,54 @@ export default function App() {
     setCheckInstallments(1);
     setCreditInstallments(1);
   };
+
+  const sendCreditPayment = () => {
+    const iframe = document.getElementById("NedarimFrame") as HTMLIFrameElement;
+    if (!iframe?.contentWindow) return;
+    setCreditPaymentProcessing(true);
+    setCreditPaymentError("");
+    iframe.contentWindow.postMessage({
+      Name: "FinishTransaction2",
+      Value: {
+        Mosad: "7005701",
+        ApiValid: "sv537",
+        PaymentType: "Ragil",
+        Currency: "1",
+        Zeout: "",
+        FirstName: selectedCustomer?.name ?? "לקוח",
+        LastName: "",
+        Street: "",
+        City: "",
+        Phone: selectedCustomer?.phone ?? "",
+        Mail: "",
+        Amount: effectiveFinalTotal.toFixed(2),
+        Tashlumim: String(creditInstallments),
+        Groupe: "",
+        Comment: "",
+        CallBack: "",
+        Tokef: ""
+      }
+    }, "*");
+  };
+
+  useEffect(() => {
+    if (!showCreditModal) return;
+    const handleNedarimMessage = (event: MessageEvent) => {
+      if (!event.data || typeof event.data !== "object") return;
+      const msg = event.data as { Name?: string; Value?: Record<string, string> };
+      if (msg.Name !== "TransactionResponse") return;
+      setCreditPaymentProcessing(false);
+      const v = msg.Value ?? {};
+      if (v.StatusCode === "000" || v.Status === "OK") {
+        completeSale();
+      } else {
+        setCreditPaymentError("התשלום נכשל" + (v.Message ? ": " + v.Message : ""));
+      }
+    };
+    window.addEventListener("message", handleNedarimMessage);
+    return () => window.removeEventListener("message", handleNedarimMessage);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCreditModal]);
 
   const savePendingSale = () => {
     if (cart.length === 0) {
@@ -4606,22 +4660,28 @@ const importBackup = async (
               <span style={{ fontWeight: 700, fontSize: "18px" }}>
                 תשלום באשראי — ₪{effectiveFinalTotal.toFixed(2)} · {creditInstallments} תשלומים
               </span>
-              <button onClick={() => setShowCreditModal(false)}
+              <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); }}
                 style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#6b7280", lineHeight: "1" }}>✕</button>
             </div>
             <iframe
-              src={`https://www.matara.pro/nedarimplus/online/?mosad=7005701&Zecut=${effectiveFinalTotal.toFixed(2)}&Tashlumim=${creditInstallments}`}
+              id="NedarimFrame"
+              src="https://matara.pro/nedarimplus/iframe?language=he"
               style={{ flex: 1, border: "none", width: "100%" }}
               title="תשלום באשראי"
             />
+            {creditPaymentError && (
+              <div style={{ padding: "10px 20px", background: "#fef2f2", color: "#dc2626", fontSize: "14px", fontWeight: 600, textAlign: "center", flexShrink: 0 }}>
+                {creditPaymentError}
+              </div>
+            )}
             <div style={{ padding: "16px 20px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "12px", flexShrink: 0 }}>
-              <button onClick={() => setShowCreditModal(false)}
+              <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); }}
                 style={{ flex: 1, padding: "12px", background: "#f1f5f9", color: "#374151", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 600, cursor: "pointer" }}>
                 ביטול
               </button>
-              <button onClick={completeSale}
-                style={{ flex: 2, padding: "12px", background: "#10b981", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>
-                ✓ תשלום בוצע — סיים עסקה
+              <button onClick={sendCreditPayment} disabled={creditPaymentProcessing}
+                style={{ flex: 2, padding: "12px", background: creditPaymentProcessing ? "#6b7280" : "#10b981", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: creditPaymentProcessing ? "not-allowed" : "pointer" }}>
+                {creditPaymentProcessing ? "⏳ מעבד תשלום..." : "✓ בצע תשלום"}
               </button>
             </div>
           </div>
