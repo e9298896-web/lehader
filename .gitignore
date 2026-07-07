@@ -12,9 +12,12 @@ dist
 dist-ssr
 *.local
 
-# Data backups
+# Data backups & local files
 backup*.json
 *.backup.json
+*.xlsx
+*.txt
+.claude/
 
 # Editor directories and files
 .vscode/*
