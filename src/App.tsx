@@ -1037,10 +1037,12 @@ export default function App() {
       );
       return { ...item, price: product?.price ?? item.price };
     }));
-    const customer = activeCustomers.find(c =>
-      c.phone.replace(/\D/g, "") === order.customerPhone.replace(/\D/g, "") ||
-      c.name === order.customerName
-    );
+    const orderPhone = order.customerPhone.replace(/\D/g, "");
+    const customer = activeCustomers.find(c => {
+      const cp = c.phone.replace(/\D/g, "");
+      if (orderPhone.length >= 7 && cp.length >= 7 && cp === orderPhone) return true;
+      return c.name === order.customerName;
+    });
     setSelectedCustomer(customer || null);
     setCustomerSearch("");
     setActiveTab("cashier");
