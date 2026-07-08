@@ -734,7 +734,7 @@ export default function App() {
       Name: "FinishTransaction2",
       Value: {
         Mosad: "7005701",
-        ApiValid: "sv537",
+        ApiValid: "6qvjd/RCnK",
         PaymentType: "Ragil",
         Currency: "1",
         Zeout: "",
