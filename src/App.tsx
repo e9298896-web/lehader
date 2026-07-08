@@ -1324,19 +1324,12 @@ export default function App() {
     let reservedQty: number | undefined;
     let availableQty: number | undefined;
     if (preOrders) {
-      const totalPreordered = preOrders.reduce((sum, o) => {
-        const item = o.items.find(i => i.id === inv.productId);
-        return sum + (item?.qty ?? 0);
-      }, 0);
-      const soldViaPreorder = txs.reduce((sum, t) => {
-        if (!t.preOrderId) return sum;
-        const po = preOrders.find(o => o.id === t.preOrderId);
-        const orderedQty = po?.items.find(i => i.id === inv.productId)?.qty ?? 0;
-        if (orderedQty === 0) return sum;
-        const txQty = Math.min(t.items.find(i => i.id === inv.productId)?.qty ?? 0, orderedQty);
-        return t.isReturn ? sum - txQty : sum + txQty;
-      }, 0);
-      reservedQty = totalPreordered - soldViaPreorder;
+      reservedQty = preOrders
+        .filter(o => o.status === "pending")
+        .reduce((sum, o) => {
+          const item = o.items.find(i => i.id === inv.productId);
+          return sum + (item?.qty ?? 0);
+        }, 0);
       availableQty = remainingQty - reservedQty;
     }
 
