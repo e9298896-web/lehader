@@ -622,14 +622,28 @@ export default function App() {
       prev
         .map((item) =>
           item.id === id
-            ? {
-                ...item,
-                qty: item.qty - 1,
-              }
+            ? { ...item, qty: item.qty - 1 }
             : item
         )
         .filter((item) => item.qty > 0)
     );
+    if (activePreOrderRef) {
+      setSaleDays(prev => prev.map(day => {
+        if (day.id !== activePreOrderRef.saleDayId) return day;
+        return {
+          ...day,
+          preOrders: day.preOrders.map(o => {
+            if (o.id !== activePreOrderRef.orderId) return o;
+            return {
+              ...o,
+              items: o.items
+                .map(item => item.id === id ? { ...item, qty: item.qty - 1 } : item)
+                .filter(item => item.qty > 0)
+            };
+          })
+        };
+      }));
+    }
   };
 
   let total = 0;
