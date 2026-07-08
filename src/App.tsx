@@ -1037,8 +1037,9 @@ export default function App() {
       );
       return { ...item, price: product?.price ?? item.price };
     }));
-    const customer = activeCustomers.find(c => c.name === order.customerName);
-    setSelectedCustomer(customer || null);
+    const customer = activeCustomers.find(c => c.name === order.customerName)
+      ?? (order.customerName ? { id: 0, name: order.customerName, phone: order.customerPhone ?? "", idNumber: "", customerType: "1" as CustomerType } : null);
+    setSelectedCustomer(customer);
     setCustomerSearch("");
     setActiveTab("cashier");
     setActivePreOrderRef({ orderId, saleDayId });
