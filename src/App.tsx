@@ -614,8 +614,20 @@ export default function App() {
 
   const addToCart = (product: Product) => {
     if (isOpenMode) {
-      setOpenPriceProduct(product);
-      setOpenPriceManual("");
+      if (product.price > 0) {
+        const fixedPrice = product.price;
+        const currentQty = cart.filter(i => i.id === product.id && i.price === fixedPrice).reduce((s, i) => s + i.qty, 0);
+        const err = checkCanAddToCart(product.id, currentQty);
+        if (err) { setEmailAlertMessage(err); return; }
+        setCart(prev => {
+          const existing = prev.find(i => i.id === product.id && i.price === fixedPrice);
+          if (existing) return prev.map(i => (i.id === product.id && i.price === fixedPrice) ? { ...i, qty: i.qty + 1 } : i);
+          return [...prev, { id: product.id, name: product.name, price: fixedPrice, qty: 1 }];
+        });
+      } else {
+        setOpenPriceProduct(product);
+        setOpenPriceManual("");
+      }
       return;
     }
     const currentQty = cart.find(i => i.id === product.id)?.qty ?? 0;
@@ -1295,7 +1307,7 @@ export default function App() {
       return;
     }
 
-    if (!newName || !newPrice || !newCategory) {
+    if (!newName || !newCategory) {
       return;
     }
 
@@ -2420,7 +2432,7 @@ const importBackup = async (
                     onMouseLeave={e => (e.currentTarget.style.borderColor = "transparent")}
                   >
                     <span style={{ fontSize: "15px" }}>{product.name}</span>
-                    {!isOpenMode && <span style={{ color: "#2563eb", fontSize: "16px" }}>₪{getEffectivePrice(product.price)}</span>}
+                    {(!isOpenMode || product.price > 0) && <span style={{ color: "#2563eb", fontSize: "16px" }}>₪{getEffectivePrice(product.price)}</span>}
                     {(() => {
                       const info = getCashierProductRemaining(product.id);
                       if (!info) return null;
@@ -2536,22 +2548,25 @@ const importBackup = async (
 
               {/* סיכום */}
               <div style={{ borderTop: "2px solid #f1f5f9", paddingTop: "10px", marginTop: "4px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px", color: "#6b7280", marginBottom: "3px" }}>
-                  <span>סכום</span><span>₪{total}</span>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "14px", color: "#6b7280", marginBottom: "3px" }}>
+                  <span>סכום</span>
+                  {isOpenMode ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span>₪{total}</span>
+                      <span style={{ color: "#374151", fontWeight: 600, fontSize: "13px" }}>הנחה:</span>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={manualDiscountAmount}
+                        onChange={e => setManualDiscountAmount(e.target.value)}
+                        style={{ ...inputStyle, width: "70px", padding: "2px 6px", fontSize: "13px" }}
+                      />
+                    </div>
+                  ) : (
+                    <span>₪{total}</span>
+                  )}
                 </div>
-                {isOpenMode && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
-                    <span style={{ fontSize: "14px", fontWeight: 600, color: "#374151", whiteSpace: "nowrap" }}>הנחה ₪:</span>
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="0"
-                      value={manualDiscountAmount}
-                      onChange={e => setManualDiscountAmount(e.target.value)}
-                      style={{ ...inputStyle, flex: 1, maxWidth: "100px", padding: "4px 8px", fontSize: "14px" }}
-                    />
-                  </div>
-                )}
                 {discountAmount > 0 && (
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#16a34a", fontWeight: 700, marginBottom: "3px" }}>
                     <span>הנחה</span><span>−₪{discountAmount}</span>
@@ -2788,8 +2803,13 @@ const importBackup = async (
                         {product.category}
                       </div>
                       <div style={{ minWidth: "60px", fontSize: "14px" }}>
-                        ₪{product.price}
+                        {product.price > 0 ? `₪${product.price}` : "—"}
                       </div>
+                      {(product.priceLevels ?? []).length > 0 && (
+                        <div style={{ fontSize: "12px", color: "#6b7280" }}>
+                          {(product.priceLevels ?? []).map(l => `₪${l}`).join(", ")}
+                        </div>
+                      )}
                     </div>
                     <div
                       style={{
