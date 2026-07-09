@@ -121,7 +121,7 @@ type PreOrder = {
   status: "pending" | "paid";
 };
 
-type SaleDayType = "preorder" | "walkin" | "walkin-nodiscount";
+type SaleDayType = "preorder" | "walkin" | "walkin-nodiscount" | "open";
 
 type InventoryItem = {
   productId: number;
@@ -157,6 +157,7 @@ type SaleDay = {
   customers: Customer[];
   transactions: Transaction[];
   inventory?: InventoryItem[];
+  priceLevels?: number[];
 };
 
 export default function App() {
@@ -236,6 +237,10 @@ export default function App() {
 
   const [activePreOrderRef, setActivePreOrderRef] =
     useState<{ orderId: number; saleDayId: number } | null>(null);
+
+  const [openPriceProduct, setOpenPriceProduct] = useState<Product | null>(null);
+  const [openPriceManual, setOpenPriceManual] = useState("");
+  const [manualDiscountAmount, setManualDiscountAmount] = useState("");
 
 
   const [emailAlertMessage, setEmailAlertMessage] =
@@ -335,6 +340,7 @@ export default function App() {
   const [newSaleDayName, setNewSaleDayName] = useState("");
   const [newSaleDayType, setNewSaleDayType] = useState<SaleDayType>("walkin");
   const [newSaleDayDate, setNewSaleDayDate] = useState("");
+  const [newSaleDayPriceLevels, setNewSaleDayPriceLevels] = useState("");
   const [showNewSaleDayForm, setShowNewSaleDayForm] = useState(false);
 
   const [preOrderForm, setPreOrderForm] = useState<{
@@ -544,7 +550,8 @@ export default function App() {
   const rawSearch = customerSearch.trim();
 
   const isPreorderMode = activeSaleDay?.type === "preorder";
-  const isNoDiscountMode = activeSaleDay?.type === "preorder" || activeSaleDay?.type === "walkin-nodiscount";
+  const isOpenMode = activeSaleDay?.type === "open";
+  const isNoDiscountMode = activeSaleDay?.type === "preorder" || activeSaleDay?.type === "walkin-nodiscount" || isOpenMode;
 
   const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "").replace(/^0+/, "");
   const phoneMatch = (stored: string, query: string) => {
@@ -600,6 +607,11 @@ export default function App() {
     getDiscountPercent();
 
   const addToCart = (product: Product) => {
+    if (isOpenMode) {
+      setOpenPriceProduct(product);
+      setOpenPriceManual("");
+      return;
+    }
     const currentQty = cart.find(i => i.id === product.id)?.qty ?? 0;
     const err = checkCanAddToCart(product.id, currentQty);
     if (err) { setEmailAlertMessage(err); return; }
@@ -610,18 +622,33 @@ export default function App() {
     });
   };
 
-  const increaseQty = (id: number) => {
-    const currentQty = cart.find(i => i.id === id)?.qty ?? 0;
-    const err = checkCanAddToCart(id, currentQty);
-    if (err) { setEmailAlertMessage(err); return; }
-    setCart(prev => prev.map(item => item.id === id ? { ...item, qty: item.qty + 1 } : item));
+  const addToCartWithPrice = (product: Product, price: number) => {
+    if (!price || price <= 0) return;
+    setCart(prev => {
+      const existing = prev.find(i => i.id === product.id && i.price === price);
+      if (existing) return prev.map(i => (i.id === product.id && i.price === price) ? { ...i, qty: i.qty + 1 } : i);
+      return [...prev, { id: product.id, name: product.name, price, qty: 1 }];
+    });
+    setOpenPriceProduct(null);
+    setOpenPriceManual("");
   };
 
-  const decreaseQty = (id: number) => {
+  const increaseQty = (id: number, price?: number) => {
+    const currentQty = cart.filter(i => i.id === id && (price === undefined || i.price === price)).reduce((s, i) => s + i.qty, 0);
+    const err = checkCanAddToCart(id, currentQty);
+    if (err) { setEmailAlertMessage(err); return; }
+    setCart(prev => prev.map(item =>
+      item.id === id && (price === undefined || item.price === price)
+        ? { ...item, qty: item.qty + 1 }
+        : item
+    ));
+  };
+
+  const decreaseQty = (id: number, price?: number) => {
     setCart((prev) =>
       prev
         .map((item) =>
-          item.id === id
+          item.id === id && (price === undefined || item.price === price)
             ? { ...item, qty: item.qty - 1 }
             : item
         )
@@ -635,8 +662,9 @@ export default function App() {
     total += item.price * item.qty;
   });
 
-  const discountAmount =
-    (total * discountPercent) / 100;
+  const discountAmount = isOpenMode
+    ? Math.min(Number(manualDiscountAmount) || 0, total)
+    : (total * discountPercent) / 100;
 
   const finalTotal =
     total - discountAmount;
@@ -716,6 +744,7 @@ export default function App() {
 
     logActivity(`סיום עסקה — ${selectedCustomer?.name || "מזדמן"} ₪${effectiveFinalTotal.toFixed(2)}`);
     setCart([]);
+    setManualDiscountAmount("");
     setShowCreditModal(false);
     setCashReceived("");
     setCheckInstallments(1);
@@ -868,6 +897,10 @@ export default function App() {
 
   const addSaleDay = () => {
     if (!newSaleDayName) return;
+    const parsedLevels = newSaleDayPriceLevels
+      .split(/[,\s]+/)
+      .map(s => Number(s.trim()))
+      .filter(n => n > 0);
     const newDay: SaleDay = {
       id: Date.now(),
       name: newSaleDayName,
@@ -879,10 +912,12 @@ export default function App() {
       products: activeProducts.map(p => ({ ...p })),
       customers: [],
       transactions: [],
+      ...(newSaleDayType === "open" && parsedLevels.length > 0 ? { priceLevels: parsedLevels } : {}),
     };
     setSaleDays(prev => [newDay, ...prev]);
     setNewSaleDayName("");
     setNewSaleDayDate("");
+    setNewSaleDayPriceLevels("");
   };
 
   const toggleSaleDay = (id: number) => {
@@ -1977,6 +2012,7 @@ const importBackup = async (
   const clearCart = () => {
     setCart([]);
     setActivePreOrderRef(null);
+    setManualDiscountAmount("");
   };
 
   const getDailySalesReport = () => {
@@ -2298,6 +2334,7 @@ const importBackup = async (
                     {activeSaleDay.type === "walkin" && <span style={{ color: "#d97706" }}>לקוחות עם הנחה</span>}
                     {activeSaleDay.type === "walkin-nodiscount" && <span style={{ color: "#d97706" }}>לקוחות ללא הנחה</span>}
                     {activeSaleDay.type === "preorder" && <span style={{ color: "#d97706" }}>ממתינות: {activeSaleDay.preOrders.filter(o => o.status === "pending").length}</span>}
+                    {activeSaleDay.type === "open" && <span style={{ color: "#7c3aed" }}>מכירה פתוחה</span>}
                   </div>
                 )}
               </div>
@@ -2402,6 +2439,24 @@ const importBackup = async (
 
               {/* תשלום */}
               <div style={{ borderTop: "2px solid #e2e8f0", paddingTop: "12px", flexShrink: 0 }}>
+                {isOpenMode && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                    <span style={{ fontSize: "14px", fontWeight: 600, color: "#374151", whiteSpace: "nowrap" }}>הנחה ₪:</span>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={manualDiscountAmount}
+                      onChange={e => setManualDiscountAmount(e.target.value)}
+                      style={{ ...inputStyle, flex: 1, maxWidth: "120px" }}
+                    />
+                    {Number(manualDiscountAmount) > 0 && (
+                      <span style={{ fontSize: "13px", color: "#16a34a", fontWeight: 600 }}>
+                        לתשלום: ₪{Math.max(0, total - (Number(manualDiscountAmount) || 0)).toFixed(0)}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
                   {(["cash","check","credit"] as const).map(m => (
                     <button key={m} onClick={() => { setPaymentMethod(m); setShowCreditModal(false); }}
@@ -2469,12 +2524,15 @@ const importBackup = async (
               <div style={{ flex: 1, overflowY: "auto" }}>
                 {cart.length === 0 && <div style={{ color: "#9ca3af", textAlign: "center", paddingTop: "40px" }}>הסל ריק</div>}
                 {cart.map(item => (
-                  <div key={item.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0", borderBottom: "1px solid #f1f5f9" }}>
-                    <span style={{ flex: 1, fontWeight: 600, fontSize: "14px" }}>{item.name}</span>
+                  <div key={`${item.id}-${item.price}`} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0", borderBottom: "1px solid #f1f5f9" }}>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontWeight: 600, fontSize: "14px" }}>{item.name}</span>
+                      {isOpenMode && <span style={{ display: "block", fontSize: "12px", color: "#6b7280" }}>₪{item.price} ליח׳</span>}
+                    </div>
                     <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <button onClick={() => decreaseQty(item.id)} style={{ ...redButton, padding: "2px 10px", fontSize: "16px" }}>−</button>
+                      <button onClick={() => decreaseQty(item.id, isOpenMode ? item.price : undefined)} style={{ ...redButton, padding: "2px 10px", fontSize: "16px" }}>−</button>
                       <span style={{ minWidth: "24px", textAlign: "center", fontWeight: 700 }}>{item.qty}</span>
-                      <button onClick={() => increaseQty(item.id)} style={{ ...blueButton, padding: "2px 10px", fontSize: "16px" }}>+</button>
+                      <button onClick={() => increaseQty(item.id, isOpenMode ? item.price : undefined)} style={{ ...blueButton, padding: "2px 10px", fontSize: "16px" }}>+</button>
                     </div>
                     <span style={{ minWidth: "60px", textAlign: "left", color: "#2563eb", fontWeight: 700, fontSize: "14px" }}>₪{(item.price * item.qty).toFixed(0)}</span>
                   </div>
@@ -2893,7 +2951,16 @@ const importBackup = async (
                       <option value="walkin">לקוחות עם הנחה</option>
                       <option value="walkin-nodiscount">לקוחות ללא הנחה</option>
                       <option value="preorder">הזמנות</option>
+                      <option value="open">מכירה פתוחה</option>
                     </select>
+                    {newSaleDayType === "open" && (
+                      <input
+                        placeholder="רמות מחיר (מופרדות בפסיק): 5,10,15,20"
+                        value={newSaleDayPriceLevels}
+                        onChange={e => setNewSaleDayPriceLevels(e.target.value)}
+                        style={{ ...inputStyle, flex: "1 1 200px" }}
+                      />
+                    )}
                     <button
                       onClick={() => { addSaleDay(); setShowNewSaleDayForm(false); }}
                       style={blueButton}
@@ -2931,6 +2998,8 @@ const importBackup = async (
                         ? `לקוחות עם הנחה`
                         : day.type === "walkin-nodiscount"
                         ? `לקוחות ללא הנחה`
+                        : day.type === "open"
+                        ? `מכירה פתוחה${day.priceLevels?.length ? ` | רמות: ${day.priceLevels.join(", ")} ₪` : ""}`
                         : `הזמנות: ${day.preOrders.length} (${day.preOrders.filter(o => o.status === "pending").length} ממתינות)`}
                     </div>
                   </div>
@@ -4645,6 +4714,49 @@ const importBackup = async (
           </div>
         );
       })()}
+      {openPriceProduct && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => { setOpenPriceProduct(null); setOpenPriceManual(""); }}>
+          <div style={{ background: "white", borderRadius: "20px", padding: "28px", minWidth: "320px", maxWidth: "420px", width: "90vw", boxShadow: "0 20px 50px rgba(0,0,0,0.3)" }}
+            onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 6px", fontSize: "20px", textAlign: "center" }}>{openPriceProduct.name}</h3>
+            <p style={{ margin: "0 0 20px", color: "#6b7280", textAlign: "center", fontSize: "14px" }}>בחר מחיר</p>
+            {(activeSaleDay?.priceLevels ?? []).length > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(80px, 1fr))", gap: "10px", marginBottom: "16px" }}>
+                {(activeSaleDay?.priceLevels ?? []).map(lvl => (
+                  <button key={lvl} onClick={() => addToCartWithPrice(openPriceProduct, lvl)}
+                    style={{ padding: "14px 8px", background: "#eff6ff", border: "2px solid #bfdbfe", borderRadius: "12px", fontSize: "18px", fontWeight: 700, cursor: "pointer", color: "#1d4ed8" }}>
+                    ₪{lvl}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <input
+                type="number"
+                min="0"
+                placeholder="מחיר ידני"
+                value={openPriceManual}
+                onChange={e => setOpenPriceManual(e.target.value)}
+                style={{ ...inputStyle, flex: 1, fontSize: "16px" }}
+                onKeyDown={e => { if (e.key === "Enter" && Number(openPriceManual) > 0) addToCartWithPrice(openPriceProduct, Number(openPriceManual)); }}
+                autoFocus
+              />
+              <button
+                onClick={() => addToCartWithPrice(openPriceProduct, Number(openPriceManual))}
+                disabled={!(Number(openPriceManual) > 0)}
+                style={{ padding: "12px 20px", background: Number(openPriceManual) > 0 ? "#2563eb" : "#e2e8f0", color: Number(openPriceManual) > 0 ? "white" : "#9ca3af", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: Number(openPriceManual) > 0 ? "pointer" : "not-allowed" }}>
+                הוסף
+              </button>
+            </div>
+            <button onClick={() => { setOpenPriceProduct(null); setOpenPriceManual(""); }}
+              style={{ marginTop: "14px", width: "100%", padding: "10px", background: "#f1f5f9", color: "#374151", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: 600, cursor: "pointer" }}>
+              ביטול
+            </button>
+          </div>
+        </div>
+      )}
+
       {showCreditModal && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
