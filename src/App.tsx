@@ -42,6 +42,7 @@ type Product = {
   category: string;
   stock: number;
   warehouseCode?: string;
+  priceLevels?: number[];
 };
 
 type CartItem = {
@@ -340,7 +341,6 @@ export default function App() {
   const [newSaleDayName, setNewSaleDayName] = useState("");
   const [newSaleDayType, setNewSaleDayType] = useState<SaleDayType>("walkin");
   const [newSaleDayDate, setNewSaleDayDate] = useState("");
-  const [newSaleDayPriceLevels, setNewSaleDayPriceLevels] = useState("");
   const [showNewSaleDayForm, setShowNewSaleDayForm] = useState(false);
 
   const [preOrderForm, setPreOrderForm] = useState<{
@@ -379,6 +379,12 @@ export default function App() {
     useState("");
 
   const [editingCategory, setEditingCategory] =
+    useState("");
+
+  const [editingPriceLevels, setEditingPriceLevels] =
+    useState("");
+
+  const [newPriceLevels, setNewPriceLevels] =
     useState("");
 
   const [isFullscreen, setIsFullscreen] =
@@ -897,10 +903,6 @@ export default function App() {
 
   const addSaleDay = () => {
     if (!newSaleDayName) return;
-    const parsedLevels = newSaleDayPriceLevels
-      .split(/[,\s]+/)
-      .map(s => Number(s.trim()))
-      .filter(n => n > 0);
     const newDay: SaleDay = {
       id: Date.now(),
       name: newSaleDayName,
@@ -912,12 +914,10 @@ export default function App() {
       products: activeProducts.map(p => ({ ...p })),
       customers: [],
       transactions: [],
-      ...(newSaleDayType === "open" && parsedLevels.length > 0 ? { priceLevels: parsedLevels } : {}),
     };
     setSaleDays(prev => [newDay, ...prev]);
     setNewSaleDayName("");
     setNewSaleDayDate("");
-    setNewSaleDayPriceLevels("");
   };
 
   const toggleSaleDay = (id: number) => {
@@ -1299,6 +1299,10 @@ export default function App() {
       return;
     }
 
+    const parsedLevels = newPriceLevels
+      .split(/[,\s]+/)
+      .map(s => Number(s.trim()))
+      .filter(n => n > 0);
     setActiveProducts((prev) => [
       ...prev,
       {
@@ -1307,12 +1311,14 @@ export default function App() {
         price: Number(newPrice),
         category: newCategory,
         stock: 0,
+        ...(parsedLevels.length > 0 ? { priceLevels: parsedLevels } : {}),
       },
     ]);
 
     setNewName("");
     setNewPrice("");
     setNewCategory("");
+    setNewPriceLevels("");
   };
   // ── ניהול מלאי ──
   const getInventoryForDay = (day: SaleDay): InventoryItem[] => {
@@ -1874,6 +1880,7 @@ const importBackup = async (
     setEditingName(product.name);
     setEditingPrice(String(product.price));
     setEditingCategory(product.category);
+    setEditingPriceLevels((product.priceLevels ?? []).join(", "));
   };
 
   const cancelEditProduct = () => {
@@ -1881,6 +1888,7 @@ const importBackup = async (
     setEditingName("");
     setEditingPrice("");
     setEditingCategory("");
+    setEditingPriceLevels("");
   };
 
   const moveProduct = (productId: number, direction: "up" | "down") => {
@@ -1906,6 +1914,10 @@ const importBackup = async (
       return;
     }
 
+    const parsedLevels = editingPriceLevels
+      .split(/[,\s]+/)
+      .map(s => Number(s.trim()))
+      .filter(n => n > 0);
     setActiveProducts((prev) =>
       prev.map((product) =>
         product.id === editingProductId
@@ -1915,6 +1927,7 @@ const importBackup = async (
               price: Number(editingPrice),
               category: editingCategory,
               stock: product.stock,
+              priceLevels: parsedLevels.length > 0 ? parsedLevels : undefined,
             }
           : product
       )
@@ -2407,7 +2420,7 @@ const importBackup = async (
                     onMouseLeave={e => (e.currentTarget.style.borderColor = "transparent")}
                   >
                     <span style={{ fontSize: "15px" }}>{product.name}</span>
-                    <span style={{ color: "#2563eb", fontSize: "16px" }}>₪{getEffectivePrice(product.price)}</span>
+                    {!isOpenMode && <span style={{ color: "#2563eb", fontSize: "16px" }}>₪{getEffectivePrice(product.price)}</span>}
                     {(() => {
                       const info = getCashierProductRemaining(product.id);
                       if (!info) return null;
@@ -2439,24 +2452,6 @@ const importBackup = async (
 
               {/* תשלום */}
               <div style={{ borderTop: "2px solid #e2e8f0", paddingTop: "12px", flexShrink: 0 }}>
-                {isOpenMode && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-                    <span style={{ fontSize: "14px", fontWeight: 600, color: "#374151", whiteSpace: "nowrap" }}>הנחה ₪:</span>
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="0"
-                      value={manualDiscountAmount}
-                      onChange={e => setManualDiscountAmount(e.target.value)}
-                      style={{ ...inputStyle, flex: 1, maxWidth: "120px" }}
-                    />
-                    {Number(manualDiscountAmount) > 0 && (
-                      <span style={{ fontSize: "13px", color: "#16a34a", fontWeight: 600 }}>
-                        לתשלום: ₪{Math.max(0, total - (Number(manualDiscountAmount) || 0)).toFixed(0)}
-                      </span>
-                    )}
-                  </div>
-                )}
                 <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
                   {(["cash","check","credit"] as const).map(m => (
                     <button key={m} onClick={() => { setPaymentMethod(m); setShowCreditModal(false); }}
@@ -2544,6 +2539,19 @@ const importBackup = async (
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px", color: "#6b7280", marginBottom: "3px" }}>
                   <span>סכום</span><span>₪{total}</span>
                 </div>
+                {isOpenMode && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+                    <span style={{ fontSize: "14px", fontWeight: 600, color: "#374151", whiteSpace: "nowrap" }}>הנחה ₪:</span>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={manualDiscountAmount}
+                      onChange={e => setManualDiscountAmount(e.target.value)}
+                      style={{ ...inputStyle, flex: 1, maxWidth: "100px", padding: "4px 8px", fontSize: "14px" }}
+                    />
+                  </div>
+                )}
                 {discountAmount > 0 && (
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#16a34a", fontWeight: 700, marginBottom: "3px" }}>
                     <span>הנחה</span><span>−₪{discountAmount}</span>
@@ -2632,6 +2640,13 @@ const importBackup = async (
                     style={inputStyle}
                     disabled={currentRole !== "admin"}
                   />
+                  <input
+                    placeholder="רמות מחיר (פתוחה): 5, 10, 15"
+                    value={newPriceLevels}
+                    onChange={e => setNewPriceLevels(e.target.value)}
+                    style={inputStyle}
+                    disabled={currentRole !== "admin"}
+                  />
                   <button
                     onClick={() => { addProduct(); setShowNewProductForm(false); }}
                     style={blueButton}
@@ -2711,6 +2726,17 @@ const importBackup = async (
                         style={{
                           ...inputStyle,
                           flex: 0.7,
+                          padding: "8px",
+                          fontSize: "14px",
+                        }}
+                      />
+                      <input
+                        placeholder="רמות מחיר: 5, 10, 15"
+                        value={editingPriceLevels}
+                        onChange={(e) => setEditingPriceLevels(e.target.value)}
+                        style={{
+                          ...inputStyle,
+                          flex: 1,
                           padding: "8px",
                           fontSize: "14px",
                         }}
@@ -2953,14 +2979,6 @@ const importBackup = async (
                       <option value="preorder">הזמנות</option>
                       <option value="open">מכירה פתוחה</option>
                     </select>
-                    {newSaleDayType === "open" && (
-                      <input
-                        placeholder="רמות מחיר (מופרדות בפסיק): 5,10,15,20"
-                        value={newSaleDayPriceLevels}
-                        onChange={e => setNewSaleDayPriceLevels(e.target.value)}
-                        style={{ ...inputStyle, flex: "1 1 200px" }}
-                      />
-                    )}
                     <button
                       onClick={() => { addSaleDay(); setShowNewSaleDayForm(false); }}
                       style={blueButton}
@@ -4721,9 +4739,9 @@ const importBackup = async (
             onClick={e => e.stopPropagation()}>
             <h3 style={{ margin: "0 0 6px", fontSize: "20px", textAlign: "center" }}>{openPriceProduct.name}</h3>
             <p style={{ margin: "0 0 20px", color: "#6b7280", textAlign: "center", fontSize: "14px" }}>בחר מחיר</p>
-            {(activeSaleDay?.priceLevels ?? []).length > 0 && (
+            {(openPriceProduct.priceLevels ?? []).length > 0 && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(80px, 1fr))", gap: "10px", marginBottom: "16px" }}>
-                {(activeSaleDay?.priceLevels ?? []).map(lvl => (
+                {(openPriceProduct.priceLevels ?? []).map(lvl => (
                   <button key={lvl} onClick={() => addToCartWithPrice(openPriceProduct, lvl)}
                     style={{ padding: "14px 8px", background: "#eff6ff", border: "2px solid #bfdbfe", borderRadius: "12px", fontSize: "18px", fontWeight: 700, cursor: "pointer", color: "#1d4ed8" }}>
                     ₪{lvl}
