@@ -627,23 +627,6 @@ export default function App() {
         )
         .filter((item) => item.qty > 0)
     );
-    if (activePreOrderRef) {
-      setSaleDays(prev => prev.map(day => {
-        if (day.id !== activePreOrderRef.saleDayId) return day;
-        return {
-          ...day,
-          preOrders: day.preOrders.map(o => {
-            if (o.id !== activePreOrderRef.orderId) return o;
-            return {
-              ...o,
-              items: o.items
-                .map(item => item.id === id ? { ...item, qty: item.qty - 1 } : item)
-                .filter(item => item.qty > 0)
-            };
-          })
-        };
-      }));
-    }
   };
 
   let total = 0;
@@ -1342,11 +1325,24 @@ export default function App() {
     const inv = (activeSaleDay.inventory ?? []).find(i => i.productId === productId);
     if (!inv) return null;
     const txs = activeSaleDay.transactions ?? [];
-    const row = computeInventoryRow(inv, txs, activeSaleDay.type === "preorder" ? (activeSaleDay.preOrders ?? []) : undefined);
+    const preOrders = activeSaleDay.type === "preorder" ? (activeSaleDay.preOrders ?? []) : undefined;
+    const row = computeInventoryRow(inv, txs, preOrders);
+    let reserved = row.reservedQty ?? null;
+    let available = row.availableQty ?? null;
+    if (activePreOrderRef && preOrders && reserved !== null && available !== null) {
+      const activeOrder = preOrders.find(o => o.id === activePreOrderRef.orderId && o.status === "pending");
+      if (activeOrder) {
+        const orderedQty = activeOrder.items.find(i => i.id === productId)?.qty ?? 0;
+        const cartQty = cart.find(i => i.id === productId)?.qty ?? 0;
+        const freed = Math.max(orderedQty - cartQty, 0);
+        reserved = reserved - freed;
+        available = available + freed;
+      }
+    }
     return {
       remaining: row.remainingQty,
-      reserved: row.reservedQty ?? null,
-      available: row.availableQty ?? null,
+      reserved,
+      available,
     };
   };
 
