@@ -2780,79 +2780,50 @@ const importBackup = async (
                     <div
                       style={{
                         display: "flex",
-                        gap: "8px",
+                        gap: "6px",
                         flex: 1,
-                        minWidth: "300px",
+                        flexWrap: "wrap",
+                        alignItems: "center",
                       }}
                     >
                       <input
                         placeholder="שם"
                         value={editingName}
-                        onChange={(e) =>
-                          setEditingName(
-                            e.target.value
-                          )
-                        }
-                        style={{
-                          ...inputStyle,
-                          flex: 1,
-                          padding: "8px",
-                          fontSize: "14px",
-                        }}
+                        onChange={(e) => setEditingName(e.target.value)}
+                        style={{ ...inputStyle, flex: "2 1 120px", padding: "6px 8px", fontSize: "13px" }}
                       />
                       <input
                         placeholder="קטגוריה"
                         value={editingCategory}
-                        onChange={(e) =>
-                          setEditingCategory(
-                            e.target.value
-                          )
-                        }
-                        style={{
-                          ...inputStyle,
-                          flex: 1,
-                          padding: "8px",
-                          fontSize: "14px",
-                        }}
+                        onChange={(e) => setEditingCategory(e.target.value)}
+                        style={{ ...inputStyle, flex: "1 1 90px", padding: "6px 8px", fontSize: "13px" }}
                       />
                       <input
                         type="number"
-                        placeholder="מחיר"
+                        placeholder="₪"
                         value={editingPrice}
-                        onChange={(e) =>
-                          setEditingPrice(
-                            e.target.value
-                          )
-                        }
-                        style={{
-                          ...inputStyle,
-                          flex: 0.7,
-                          padding: "8px",
-                          fontSize: "14px",
-                        }}
+                        onChange={(e) => setEditingPrice(e.target.value)}
+                        style={{ ...inputStyle, width: "62px", flex: "0 0 62px", padding: "6px 6px", fontSize: "13px" }}
                       />
                       <input
-                        placeholder="רמות מחיר: 5, 10, 15"
+                        placeholder="רמות: 5,10,15"
                         value={editingPriceLevels}
                         onChange={(e) => setEditingPriceLevels(e.target.value)}
-                        style={{
-                          ...inputStyle,
-                          flex: 1,
-                          padding: "8px",
-                          fontSize: "14px",
-                        }}
+                        style={{ ...inputStyle, flex: "1 1 100px", padding: "6px 8px", fontSize: "13px" }}
                       />
                       <button
                         onClick={() => setEditingGiftTrigger(v => !v)}
-                        style={{ padding: "6px 12px", borderRadius: "8px", border: `2px solid ${editingGiftTrigger ? "#7c3aed" : "#e2e8f0"}`, background: editingGiftTrigger ? "#ede9fe" : "white", color: editingGiftTrigger ? "#7c3aed" : "#6b7280", fontWeight: 700, cursor: "pointer", fontSize: "12px", whiteSpace: "nowrap" }}
+                        style={{ padding: "5px 8px", borderRadius: "8px", border: `2px solid ${editingGiftTrigger ? "#7c3aed" : "#e2e8f0"}`, background: editingGiftTrigger ? "#ede9fe" : "white", color: editingGiftTrigger ? "#7c3aed" : "#9ca3af", fontWeight: 700, cursor: "pointer", fontSize: "14px", lineHeight: 1 }}
+                        title="מוצר מזכה שקית"
                       >
-                        🎁 מזכה
+                        🎁
                       </button>
                       <button
                         onClick={() => setEditingIsGiftBag(v => !v)}
-                        style={{ padding: "6px 12px", borderRadius: "8px", border: `2px solid ${editingIsGiftBag ? "#7c3aed" : "#e2e8f0"}`, background: editingIsGiftBag ? "#ede9fe" : "white", color: editingIsGiftBag ? "#7c3aed" : "#6b7280", fontWeight: 700, cursor: "pointer", fontSize: "12px", whiteSpace: "nowrap" }}
+                        style={{ padding: "5px 8px", borderRadius: "8px", border: `2px solid ${editingIsGiftBag ? "#7c3aed" : "#e2e8f0"}`, background: editingIsGiftBag ? "#ede9fe" : "white", color: editingIsGiftBag ? "#7c3aed" : "#9ca3af", fontWeight: 700, cursor: "pointer", fontSize: "14px", lineHeight: 1 }}
+                        title="שקית יוקרתית"
                       >
-                        👜 שקית
+                        👜
                       </button>
                     </div>
                     <div
