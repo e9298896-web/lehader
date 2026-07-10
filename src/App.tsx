@@ -700,7 +700,9 @@ export default function App() {
     total += item.price * item.qty;
   });
 
-  const { freeQty: giftFreeQty, bagProduct: giftBagProduct, giftDiscount: giftBagDiscount } = getGiftBagInfo(cart);
+  const { freeQty: giftFreeQty, bagProduct: giftBagProduct } = getGiftBagInfo(cart);
+  // giftSaving is informational only — free bags are already at ₪0 in cart so total is already correct
+  const giftSaving = giftFreeQty * (giftBagProduct?.price ?? 0);
 
   // Auto-sync free gift bags in cart whenever trigger product qty changes
   useEffect(() => {
@@ -720,11 +722,10 @@ export default function App() {
   }, [giftFreeQty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const discountAmount = isOpenMode
-    ? Math.min(Number(manualDiscountAmount) || 0, total - giftBagDiscount)
+    ? Math.min(Number(manualDiscountAmount) || 0, total)
     : (total * discountPercent) / 100;
 
-  const finalTotal =
-    total - discountAmount - giftBagDiscount;
+  const finalTotal = total - discountAmount;
 
   const effectiveFinalTotal =
     paymentMethod === "cash"
@@ -733,18 +734,6 @@ export default function App() {
 
   const roundingDiff =
     effectiveFinalTotal - finalTotal;
-
-  const buildTransactionItems = (): CartItem[] => {
-    const { freeQty, bagProduct, bagInCart } = getGiftBagInfo(cart);
-    if (!bagProduct || freeQty === 0) return cart;
-    const paidBags = Math.max(0, bagInCart - freeQty);
-    const items: CartItem[] = [
-      ...cart.filter(i => i.id !== bagProduct.id),
-      ...(paidBags > 0 ? [{ id: bagProduct.id, name: bagProduct.name, price: bagProduct.price, qty: paidBags }] : []),
-      { id: bagProduct.id, name: bagProduct.name + " (מתנה)", price: 0, qty: freeQty },
-    ];
-    return items;
-  };
 
   const completeSale = () => {
     if (cart.length === 0) {
@@ -779,8 +768,8 @@ export default function App() {
 
     const transaction: Transaction = {
       id: Date.now(),
-      items: buildTransactionItems(),
-      total: total - giftBagDiscount,
+      items: cart,
+      total,
       finalTotal: effectiveFinalTotal,
       discountPercent,
       date: new Date().toLocaleString(),
@@ -2687,7 +2676,7 @@ const importBackup = async (
                 {giftFreeQty > 0 && (
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px", color: "#7c3aed", fontWeight: 700, marginBottom: "3px" }}>
                     <span>🎁 {giftBagProduct?.name} ×{giftFreeQty} (מתנה)</span>
-                    {giftBagDiscount > 0 && <span>−₪{giftBagDiscount}</span>}
+                    {giftSaving > 0 && <span style={{ fontSize: "12px", color: "#9ca3af", fontWeight: 400 }}>חסכת ₪{giftSaving}</span>}
                   </div>
                 )}
                 {discountAmount > 0 && (
