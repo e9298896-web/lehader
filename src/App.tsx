@@ -43,6 +43,8 @@ type Product = {
   stock: number;
   warehouseCode?: string;
   priceLevels?: number[];
+  giftTrigger?: boolean;
+  isGiftBag?: boolean;
 };
 
 type CartItem = {
@@ -387,6 +389,11 @@ export default function App() {
   const [newPriceLevels, setNewPriceLevels] =
     useState("");
 
+  const [newGiftTrigger, setNewGiftTrigger] = useState(false);
+  const [newIsGiftBag, setNewIsGiftBag] = useState(false);
+  const [editingGiftTrigger, setEditingGiftTrigger] = useState(false);
+  const [editingIsGiftBag, setEditingIsGiftBag] = useState(false);
+
   const [isFullscreen, setIsFullscreen] =
     useState(false);
 
@@ -674,18 +681,33 @@ export default function App() {
     );
   };
 
+  const getGiftBagInfo = (items: CartItem[]) => {
+    const products = activeSaleDay?.products ?? activeProducts;
+    const bagProduct = products.find(p => p.isGiftBag) ?? null;
+    if (!bagProduct) return { freeQty: 0, bagProduct: null, bagInCart: 0, freeBagsInCart: 0, giftDiscount: 0 };
+    const freeQty = items
+      .filter(i => products.find(p => p.id === i.id)?.giftTrigger)
+      .reduce((s, i) => s + i.qty, 0);
+    const bagInCart = items.filter(i => i.id === bagProduct.id).reduce((s, i) => s + i.qty, 0);
+    const freeBagsInCart = Math.min(bagInCart, freeQty);
+    const giftDiscount = freeBagsInCart * bagProduct.price;
+    return { freeQty, bagProduct, bagInCart, freeBagsInCart, giftDiscount };
+  };
+
   let total = 0;
 
   cart.forEach((item) => {
     total += item.price * item.qty;
   });
 
+  const { freeQty: giftFreeQty, bagProduct: giftBagProduct, giftDiscount: giftBagDiscount } = getGiftBagInfo(cart);
+
   const discountAmount = isOpenMode
-    ? Math.min(Number(manualDiscountAmount) || 0, total)
+    ? Math.min(Number(manualDiscountAmount) || 0, total - giftBagDiscount)
     : (total * discountPercent) / 100;
 
   const finalTotal =
-    total - discountAmount;
+    total - discountAmount - giftBagDiscount;
 
   const effectiveFinalTotal =
     paymentMethod === "cash"
@@ -694,6 +716,18 @@ export default function App() {
 
   const roundingDiff =
     effectiveFinalTotal - finalTotal;
+
+  const buildTransactionItems = (): CartItem[] => {
+    const { freeQty, bagProduct, bagInCart } = getGiftBagInfo(cart);
+    if (!bagProduct || freeQty === 0) return cart;
+    const paidBags = Math.max(0, bagInCart - freeQty);
+    const items: CartItem[] = [
+      ...cart.filter(i => i.id !== bagProduct.id),
+      ...(paidBags > 0 ? [{ id: bagProduct.id, name: bagProduct.name, price: bagProduct.price, qty: paidBags }] : []),
+      { id: bagProduct.id, name: bagProduct.name + " (מתנה)", price: 0, qty: freeQty },
+    ];
+    return items;
+  };
 
   const completeSale = () => {
     if (cart.length === 0) {
@@ -728,8 +762,8 @@ export default function App() {
 
     const transaction: Transaction = {
       id: Date.now(),
-      items: cart,
-      total,
+      items: buildTransactionItems(),
+      total: total - giftBagDiscount,
       finalTotal: effectiveFinalTotal,
       discountPercent,
       date: new Date().toLocaleString(),
@@ -1016,10 +1050,30 @@ export default function App() {
   };
 
   const buildOrderHtml = (order: PreOrder, dayName: string) => {
-    const total = order.items.reduce((s, i) => s + i.price * i.qty, 0);
-    const rows = order.items.map(i =>
+    const saleDay = saleDays.find(d => d.preOrders.some(o => o.id === order.id));
+    const products = saleDay?.products ?? activeProducts;
+    const bagProduct = products.find(p => p.isGiftBag) ?? null;
+    const giftFreeQtyOrder = order.items
+      .filter(i => products.find(p => p.id === i.id)?.giftTrigger)
+      .reduce((s, i) => s + i.qty, 0);
+    const bagInOrder = bagProduct ? order.items.filter(i => i.id === bagProduct.id).reduce((s, i) => s + i.qty, 0) : 0;
+    const paidBagsOrder = Math.max(0, bagInOrder - giftFreeQtyOrder);
+
+    const displayItems: { name: string; qty: number; price: number }[] = [
+      ...order.items
+        .filter(i => !bagProduct || i.id !== bagProduct.id)
+        .map(i => ({ name: i.name, qty: i.qty, price: i.price })),
+      ...(bagProduct && paidBagsOrder > 0 ? [{ name: bagProduct.name, qty: paidBagsOrder, price: bagProduct.price }] : []),
+      ...(bagProduct && giftFreeQtyOrder > 0 ? [{ name: bagProduct.name + " (מתנה)", qty: giftFreeQtyOrder, price: 0 }] : []),
+    ];
+
+    const total = displayItems.reduce((s, i) => s + i.price * i.qty, 0);
+    const rows = displayItems.map(i =>
       `<tr><td>${i.name}</td><td style="text-align:center">${i.qty}</td><td>₪${i.price.toFixed(2)}</td><td>₪${(i.price * i.qty).toFixed(2)}</td></tr>`
     ).join("");
+    const giftLine = bagProduct && giftFreeQtyOrder > 0
+      ? `<div class="gift-note">🎁 מתנה! הינך זכאי ל-${giftFreeQtyOrder} ${bagProduct.name} במתנה</div>`
+      : "";
     return `
       <div class="order">
         <div class="day-name">${dayName}</div>
@@ -1033,6 +1087,7 @@ export default function App() {
           <tbody>${rows}</tbody>
         </table>
         <div class="total">סה"כ לתשלום: ₪${total.toFixed(2)}</div>
+        ${giftLine}
       </div>`;
   };
 
@@ -1048,6 +1103,7 @@ export default function App() {
     th, td { padding: 6px 8px; border: 1px solid #ddd; text-align: right; }
     th { background: #f1f5f9; font-weight: bold; }
     .total { font-weight: bold; font-size: 15px; margin-top: 10px; text-align: left; }
+    .gift-note { font-weight: bold; font-size: 15px; margin-top: 8px; color: #7c3aed; border: 2px dashed #7c3aed; padding: 6px 10px; border-radius: 6px; text-align: center; }
   `;
 
   const printSingleOrder = (order: PreOrder, dayName: string) => {
@@ -1324,6 +1380,8 @@ export default function App() {
         category: newCategory,
         stock: 0,
         ...(parsedLevels.length > 0 ? { priceLevels: parsedLevels } : {}),
+        ...(newGiftTrigger ? { giftTrigger: true } : {}),
+        ...(newIsGiftBag ? { isGiftBag: true } : {}),
       },
     ]);
 
@@ -1331,6 +1389,8 @@ export default function App() {
     setNewPrice("");
     setNewCategory("");
     setNewPriceLevels("");
+    setNewGiftTrigger(false);
+    setNewIsGiftBag(false);
   };
   // ── ניהול מלאי ──
   const getInventoryForDay = (day: SaleDay): InventoryItem[] => {
@@ -1893,6 +1953,8 @@ const importBackup = async (
     setEditingPrice(String(product.price));
     setEditingCategory(product.category);
     setEditingPriceLevels((product.priceLevels ?? []).join(", "));
+    setEditingGiftTrigger(product.giftTrigger ?? false);
+    setEditingIsGiftBag(product.isGiftBag ?? false);
   };
 
   const cancelEditProduct = () => {
@@ -1901,6 +1963,8 @@ const importBackup = async (
     setEditingPrice("");
     setEditingCategory("");
     setEditingPriceLevels("");
+    setEditingGiftTrigger(false);
+    setEditingIsGiftBag(false);
   };
 
   const moveProduct = (productId: number, direction: "up" | "down") => {
@@ -1940,6 +2004,8 @@ const importBackup = async (
               category: editingCategory,
               stock: product.stock,
               priceLevels: parsedLevels.length > 0 ? parsedLevels : undefined,
+              giftTrigger: editingGiftTrigger || undefined,
+              isGiftBag: editingIsGiftBag || undefined,
             }
           : product
       )
@@ -2567,6 +2633,12 @@ const importBackup = async (
                     <span>₪{total}</span>
                   )}
                 </div>
+                {giftFreeQty > 0 && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px", color: "#7c3aed", fontWeight: 700, marginBottom: "3px" }}>
+                    <span>🎁 {giftBagProduct?.name} ×{giftFreeQty} (מתנה)</span>
+                    {giftBagDiscount > 0 && <span>−₪{giftBagDiscount}</span>}
+                  </div>
+                )}
                 {discountAmount > 0 && (
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#16a34a", fontWeight: 700, marginBottom: "3px" }}>
                     <span>הנחה</span><span>−₪{discountAmount}</span>
@@ -2663,6 +2735,20 @@ const importBackup = async (
                     disabled={currentRole !== "admin"}
                   />
                   <button
+                    onClick={() => setNewGiftTrigger(v => !v)}
+                    disabled={currentRole !== "admin"}
+                    style={{ padding: "8px 14px", borderRadius: "10px", border: `2px solid ${newGiftTrigger ? "#7c3aed" : "#e2e8f0"}`, background: newGiftTrigger ? "#ede9fe" : "white", color: newGiftTrigger ? "#7c3aed" : "#6b7280", fontWeight: 700, cursor: "pointer", fontSize: "13px" }}
+                  >
+                    🎁 מוצר מזכה
+                  </button>
+                  <button
+                    onClick={() => setNewIsGiftBag(v => !v)}
+                    disabled={currentRole !== "admin"}
+                    style={{ padding: "8px 14px", borderRadius: "10px", border: `2px solid ${newIsGiftBag ? "#7c3aed" : "#e2e8f0"}`, background: newIsGiftBag ? "#ede9fe" : "white", color: newIsGiftBag ? "#7c3aed" : "#6b7280", fontWeight: 700, cursor: "pointer", fontSize: "13px" }}
+                  >
+                    👜 שקית יוקרתית
+                  </button>
+                  <button
                     onClick={() => { addProduct(); setShowNewProductForm(false); }}
                     style={blueButton}
                     disabled={currentRole !== "admin"}
@@ -2756,6 +2842,18 @@ const importBackup = async (
                           fontSize: "14px",
                         }}
                       />
+                      <button
+                        onClick={() => setEditingGiftTrigger(v => !v)}
+                        style={{ padding: "6px 12px", borderRadius: "8px", border: `2px solid ${editingGiftTrigger ? "#7c3aed" : "#e2e8f0"}`, background: editingGiftTrigger ? "#ede9fe" : "white", color: editingGiftTrigger ? "#7c3aed" : "#6b7280", fontWeight: 700, cursor: "pointer", fontSize: "12px", whiteSpace: "nowrap" }}
+                      >
+                        🎁 מזכה
+                      </button>
+                      <button
+                        onClick={() => setEditingIsGiftBag(v => !v)}
+                        style={{ padding: "6px 12px", borderRadius: "8px", border: `2px solid ${editingIsGiftBag ? "#7c3aed" : "#e2e8f0"}`, background: editingIsGiftBag ? "#ede9fe" : "white", color: editingIsGiftBag ? "#7c3aed" : "#6b7280", fontWeight: 700, cursor: "pointer", fontSize: "12px", whiteSpace: "nowrap" }}
+                      >
+                        👜 שקית
+                      </button>
                     </div>
                     <div
                       style={{
@@ -2796,8 +2894,10 @@ const importBackup = async (
                         minWidth: "300px",
                       }}
                     >
-                      <div style={{ fontWeight: "bold", minWidth: "100px" }}>
+                      <div style={{ fontWeight: "bold", minWidth: "100px", display: "flex", alignItems: "center", gap: "4px" }}>
                         {product.name}
+                        {product.giftTrigger && <span title="מוצר מזכה שקית" style={{ fontSize: "14px" }}>🎁</span>}
+                        {product.isGiftBag && <span title="שקית יוקרתית" style={{ fontSize: "14px" }}>👜</span>}
                       </div>
                       <div style={{ minWidth: "80px", fontSize: "14px" }}>
                         {product.category}
