@@ -700,11 +700,9 @@ export default function App() {
     total += item.price * item.qty;
   });
 
-  const { freeQty: giftFreeQty, bagProduct: giftBagProduct } = getGiftBagInfo(cart);
-  // giftSaving is informational only — free bags are already at ₪0 in cart so total is already correct
-  const giftSaving = giftFreeQty * (giftBagProduct?.price ?? 0);
+  const { freeQty: giftFreeQty, bagProduct: giftBagProduct, giftDiscount: giftBagDiscount } = getGiftBagInfo(cart);
 
-  // Auto-sync free gift bags in cart whenever trigger product qty changes
+  // Auto-add gift bags at real price when trigger product qty increases
   useEffect(() => {
     const products = activeSaleDay?.products ?? activeProducts;
     const bagProduct = products.find(p => p.isGiftBag);
@@ -713,19 +711,20 @@ export default function App() {
       const triggerQty = prev
         .filter(i => products.find(p => p.id === i.id)?.giftTrigger)
         .reduce((s, i) => s + i.qty, 0);
-      const currentFree = prev.find(i => i.id === bagProduct.id && i.price === 0)?.qty ?? 0;
-      if (currentFree === triggerQty) return prev;
-      const rest = prev.filter(i => !(i.id === bagProduct.id && i.price === 0));
-      if (triggerQty === 0) return rest;
-      return [...rest, { id: bagProduct.id, name: bagProduct.name + " (מתנה)", price: 0, qty: triggerQty }];
+      const bagQty = prev.filter(i => i.id === bagProduct.id).reduce((s, i) => s + i.qty, 0);
+      if (bagQty >= triggerQty) return prev; // already enough bags
+      const toAdd = triggerQty - bagQty;
+      const existing = prev.find(i => i.id === bagProduct.id);
+      if (existing) return prev.map(i => i.id === bagProduct.id ? { ...i, qty: i.qty + toAdd } : i);
+      return [...prev, { id: bagProduct.id, name: bagProduct.name, price: bagProduct.price, qty: toAdd }];
     });
   }, [giftFreeQty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const discountAmount = isOpenMode
-    ? Math.min(Number(manualDiscountAmount) || 0, total)
+    ? Math.min(Number(manualDiscountAmount) || 0, total - giftBagDiscount)
     : (total * discountPercent) / 100;
 
-  const finalTotal = total - discountAmount;
+  const finalTotal = total - discountAmount - giftBagDiscount;
 
   const effectiveFinalTotal =
     paymentMethod === "cash"
@@ -769,7 +768,7 @@ export default function App() {
     const transaction: Transaction = {
       id: Date.now(),
       items: cart,
-      total,
+      total: total - giftBagDiscount,
       finalTotal: effectiveFinalTotal,
       discountPercent,
       date: new Date().toLocaleString(),
@@ -992,9 +991,12 @@ export default function App() {
     const triggerQty = items
       .filter(i => saleDayProducts.find(p => p.id === i.id)?.giftTrigger)
       .reduce((s, i) => s + i.qty, 0);
-    const rest = items.filter(i => !(i.id === bagProduct.id && i.price === 0));
-    if (triggerQty === 0) return rest;
-    return [...rest, { id: bagProduct.id, name: bagProduct.name + " (מתנה)", price: 0, qty: triggerQty }];
+    const bagQty = items.filter(i => i.id === bagProduct.id).reduce((s, i) => s + i.qty, 0);
+    if (bagQty >= triggerQty) return items; // already enough bags
+    const toAdd = triggerQty - bagQty;
+    const existing = items.find(i => i.id === bagProduct.id);
+    if (existing) return items.map(i => i.id === bagProduct.id ? { ...i, qty: i.qty + toAdd } : i);
+    return [...items, { id: bagProduct.id, name: bagProduct.name, price: bagProduct.price, qty: toAdd }];
   };
 
   const openPreOrderForm = (saleDayId: number, order?: PreOrder) => {
@@ -1034,13 +1036,7 @@ export default function App() {
   };
 
   const removeItemFromPreOrderForm = (itemId: number) => {
-    setPreOrderForm(prev => {
-      if (!prev) return prev;
-      const saleDay = saleDays.find(d => d.id === prev.saleDayId);
-      const dayProducts = saleDay?.products ?? activeProducts;
-      const filtered = prev.items.filter(i => i.id !== itemId);
-      return { ...prev, items: syncGiftBagItems(filtered, dayProducts) };
-    });
+    setPreOrderForm(prev => prev ? { ...prev, items: prev.items.filter(i => i.id !== itemId) } : prev);
   };
 
   const savePreOrder = () => {
@@ -2627,29 +2623,20 @@ const importBackup = async (
               {/* פריטים בסל */}
               <div style={{ flex: 1, overflowY: "auto" }}>
                 {cart.length === 0 && <div style={{ color: "#9ca3af", textAlign: "center", paddingTop: "40px" }}>הסל ריק</div>}
-                {cart.map(item => {
-                  const isGiftItem = item.price === 0 && (activeSaleDay?.products ?? activeProducts).find(p => p.id === item.id)?.isGiftBag;
-                  return (
-                    <div key={`${item.id}-${item.price}`} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0", borderBottom: "1px solid #f1f5f9", background: isGiftItem ? "#faf5ff" : undefined }}>
-                      <div style={{ flex: 1 }}>
-                        <span style={{ fontWeight: 600, fontSize: "14px", color: isGiftItem ? "#7c3aed" : undefined }}>{item.name}</span>
-                        {isOpenMode && !isGiftItem && <span style={{ display: "block", fontSize: "12px", color: "#6b7280" }}>₪{item.price} ליח׳</span>}
-                      </div>
-                      {isGiftItem ? (
-                        <span style={{ fontSize: "13px", color: "#7c3aed", fontWeight: 700 }}>×{item.qty} 🎁</span>
-                      ) : (
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                          <button onClick={() => decreaseQty(item.id, isOpenMode ? item.price : undefined)} style={{ ...redButton, padding: "2px 10px", fontSize: "16px" }}>−</button>
-                          <span style={{ minWidth: "24px", textAlign: "center", fontWeight: 700 }}>{item.qty}</span>
-                          <button onClick={() => increaseQty(item.id, isOpenMode ? item.price : undefined)} style={{ ...blueButton, padding: "2px 10px", fontSize: "16px" }}>+</button>
-                        </div>
-                      )}
-                      <span style={{ minWidth: "60px", textAlign: "left", color: isGiftItem ? "#7c3aed" : "#2563eb", fontWeight: 700, fontSize: "14px" }}>
-                        {isGiftItem ? "חינם" : `₪${(item.price * item.qty).toFixed(0)}`}
-                      </span>
+                {cart.map(item => (
+                  <div key={`${item.id}-${item.price}`} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0", borderBottom: "1px solid #f1f5f9" }}>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontWeight: 600, fontSize: "14px" }}>{item.name}</span>
+                      {isOpenMode && <span style={{ display: "block", fontSize: "12px", color: "#6b7280" }}>₪{item.price} ליח׳</span>}
                     </div>
-                  );
-                })}
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <button onClick={() => decreaseQty(item.id, isOpenMode ? item.price : undefined)} style={{ ...redButton, padding: "2px 10px", fontSize: "16px" }}>−</button>
+                      <span style={{ minWidth: "24px", textAlign: "center", fontWeight: 700 }}>{item.qty}</span>
+                      <button onClick={() => increaseQty(item.id, isOpenMode ? item.price : undefined)} style={{ ...blueButton, padding: "2px 10px", fontSize: "16px" }}>+</button>
+                    </div>
+                    <span style={{ minWidth: "60px", textAlign: "left", color: "#2563eb", fontWeight: 700, fontSize: "14px" }}>₪{(item.price * item.qty).toFixed(0)}</span>
+                  </div>
+                ))}
               </div>
 
               {/* סיכום */}
@@ -2676,7 +2663,7 @@ const importBackup = async (
                 {giftFreeQty > 0 && (
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px", color: "#7c3aed", fontWeight: 700, marginBottom: "3px" }}>
                     <span>🎁 {giftBagProduct?.name} ×{giftFreeQty} (מתנה)</span>
-                    {giftSaving > 0 && <span style={{ fontSize: "12px", color: "#9ca3af", fontWeight: 400 }}>חסכת ₪{giftSaving}</span>}
+                    {giftBagDiscount > 0 && <span>−₪{giftBagDiscount}</span>}
                   </div>
                 )}
                 {discountAmount > 0 && (
@@ -3224,23 +3211,19 @@ const importBackup = async (
                   )}
                   {preOrderForm.items.map(item => (
                     <div
-                      key={`${item.id}-${item.price}`}
+                      key={item.id}
                       style={{
                         display: "flex", justifyContent: "space-between", alignItems: "center",
-                        padding: "6px 10px", background: item.price === 0 ? "#f5f3ff" : "#f8fafc", borderRadius: "8px", marginBottom: "6px",
+                        padding: "6px 10px", background: "#f8fafc", borderRadius: "8px", marginBottom: "6px",
                       }}
                     >
-                      <div style={{ color: item.price === 0 ? "#7c3aed" : undefined }}>
-                        {item.name} ×{item.qty}{item.price > 0 ? ` = ₪${(item.price * item.qty).toFixed(2)}` : " 🎁 חינם"}
-                      </div>
-                      {item.price > 0 && (
-                        <button
-                          onClick={() => removeItemFromPreOrderForm(item.id)}
-                          style={{ ...redButton, padding: "4px 8px", fontSize: "12px" }}
-                        >
-                          ✕
-                        </button>
-                      )}
+                      <div>{item.name} x{item.qty} = ₪{(item.price * item.qty).toFixed(2)}</div>
+                      <button
+                        onClick={() => removeItemFromPreOrderForm(item.id)}
+                        style={{ ...redButton, padding: "4px 8px", fontSize: "12px" }}
+                      >
+                        ✕
+                      </button>
                     </div>
                   ))}
 
