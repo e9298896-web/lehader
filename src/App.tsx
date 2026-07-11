@@ -3227,11 +3227,30 @@ const importBackup = async (
                     </div>
                   ))}
 
-                  {preOrderForm.items.length > 0 && (
-                    <div style={{ fontWeight: "bold", margin: "8px 0 16px" }}>
-                      סה"כ: ₪{preOrderForm.items.reduce((s, i) => s + i.price * i.qty, 0).toFixed(2)}
-                    </div>
-                  )}
+                  {preOrderForm.items.length > 0 && (() => {
+                    const saleDay = saleDays.find(d => d.id === preOrderForm.saleDayId);
+                    const dayProducts = saleDay?.products ?? activeProducts;
+                    const bagProduct = dayProducts.find(p => p.isGiftBag);
+                    const poRawTotal = preOrderForm.items.reduce((s, i) => s + i.price * i.qty, 0);
+                    const poFreeQty = preOrderForm.items
+                      .filter(i => dayProducts.find(p => p.id === i.id)?.giftTrigger)
+                      .reduce((s, i) => s + i.qty, 0);
+                    const poBagInCart = bagProduct
+                      ? preOrderForm.items.filter(i => i.id === bagProduct.id).reduce((s, i) => s + i.qty, 0)
+                      : 0;
+                    const poGiftDiscount = bagProduct ? Math.min(poBagInCart, poFreeQty) * bagProduct.price : 0;
+                    const poTotal = poRawTotal - poGiftDiscount;
+                    return (
+                      <div style={{ margin: "8px 0 16px" }}>
+                        {poGiftDiscount > 0 && (
+                          <div style={{ fontSize: "13px", color: "#7c3aed", fontWeight: 700, marginBottom: "2px" }}>
+                            🎁 {bagProduct?.name} ×{Math.min(poBagInCart, poFreeQty)} (מתנה) −₪{poGiftDiscount}
+                          </div>
+                        )}
+                        <div style={{ fontWeight: "bold" }}>סה"כ: ₪{poTotal.toFixed(2)}</div>
+                      </div>
+                    );
+                  })()}
 
                   <div style={{ display: "flex", gap: "10px" }}>
                     <button onClick={savePreOrder} style={{ ...blueButton, flex: 1 }}>שמור הזמנה</button>
