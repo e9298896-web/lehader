@@ -4702,14 +4702,19 @@ const importBackup = async (
                       </div>
                       {/* פרטי הזמנה — מוצגים רק בלחיצה */}
                       {isExpanded && (
-                        <div style={{ padding: "0 14px 12px", borderTop: "1px solid #e2e8f0", textAlign: "right" }}>
+                        <div style={{ padding: "0 14px 12px", borderTop: "1px solid #e2e8f0", direction: "rtl", textAlign: "right" }}>
                           {!allOrdersFilterDayId && <div style={{ fontSize: "12px", color: "#64748b", marginTop: "8px" }}>יום מכירה: {dayName}</div>}
-                          <div style={{ fontSize: "12px", color: "#374151", marginTop: "6px" }}>
-                            {order.items.map(i => `${i.name} x${i.qty}`).join(" | ")}
+                          <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "2px" }}>
+                            {order.items.map(i => (
+                              <div key={i.id} style={{ fontSize: "12px", color: "#374151", display: "flex", justifyContent: "space-between" }}>
+                                <span>{i.name}</span>
+                                <span style={{ color: "#6b7280" }}>×{i.qty} &nbsp; ₪{(i.price * i.qty).toFixed(0)}</span>
+                              </div>
+                            ))}
                           </div>
                           {order.notes && <div style={{ fontSize: "12px", color: "#059669", marginTop: "4px" }}>{order.notes}</div>}
-                          <div style={{ fontSize: "13px", fontWeight: "bold", marginTop: "6px" }}>
-                            ₪{order.items.reduce((s, i) => s + i.price * i.qty, 0).toFixed(2)}
+                          <div style={{ fontSize: "13px", fontWeight: "bold", marginTop: "6px", borderTop: "1px solid #f1f5f9", paddingTop: "4px" }}>
+                            סה"כ: ₪{order.items.reduce((s, i) => s + i.price * i.qty, 0).toFixed(0)}
                           </div>
                         </div>
                       )}
