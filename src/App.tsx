@@ -238,6 +238,9 @@ export default function App() {
   const [creditPaymentError, setCreditPaymentError] =
     useState("");
 
+  const [creditPaymentSuccess, setCreditPaymentSuccess] =
+    useState(false);
+
   const [activePreOrderRef, setActivePreOrderRef] =
     useState<{ orderId: number; saleDayId: number } | null>(null);
 
@@ -740,7 +743,11 @@ export default function App() {
     }
 
     if (paymentMethod === "cash") {
-      const received = Number(cashReceived || effectiveFinalTotal);
+      if (!cashReceived || cashReceived.trim() === "") {
+        setEmailAlertMessage("יש להזין את הסכום שהתקבל");
+        return;
+      }
+      const received = Number(cashReceived);
       if (received < effectiveFinalTotal) {
         setEmailAlertMessage(`הסכום שהתקבל (₪${received.toFixed(2)}) נמוך מהסכום לתשלום (₪${effectiveFinalTotal.toFixed(2)})`);
         return;
@@ -846,9 +853,14 @@ export default function App() {
       setCreditPaymentProcessing(false);
       const v = msg.Value ?? {};
       if (v.StatusCode === "000" || v.Status === "OK") {
-        completeSale();
+        setCreditPaymentSuccess(true);
+        setTimeout(() => completeSale(), 2000);
       } else {
-        setCreditPaymentError("התשלום נכשל" + (v.Message ? ": " + v.Message : ""));
+        const parts: string[] = [];
+        if (v.StatusCode) parts.push(`קוד: ${v.StatusCode}`);
+        if (v.Message) parts.push(v.Message);
+        if (v.Status && v.Status !== "OK") parts.push(`סטטוס: ${v.Status}`);
+        setCreditPaymentError("הסליקה נכשלה" + (parts.length ? " — " + parts.join(" | ") : ""));
       }
     };
     window.addEventListener("message", handleNedarimMessage);
@@ -895,6 +907,7 @@ export default function App() {
   };
 
   const deletePendingSale = (id: number) => {
+    if (!window.confirm("למחוק עסקה זו מההמתנה?")) return;
     setPendingSales((prev) =>
       prev.filter((sale) => sale.id !== id)
     );
@@ -1291,9 +1304,15 @@ export default function App() {
           }
         }
 
+        const normPhone = (p: string) => String(p || "").replace(/\D/g, "").replace(/^0+/, "");
+        const existingOrderKeys = new Set(day.preOrders.map(o => `${o.customerName}|${normPhone(o.customerPhone)}`));
+        const uniqueOrders = importedOrders.filter(o => !existingOrderKeys.has(`${o.customerName}|${normPhone(o.customerPhone)}`));
+        const skipped = importedOrders.length - uniqueOrders.length;
+        if (skipped > 0) alert(`${skipped} הזמנות כבר קיימות ולא יובאו שנית. יובאו ${uniqueOrders.length} הזמנות חדשות.`);
+
         return {
           ...day,
-          preOrders: [...day.preOrders, ...importedOrders],
+          preOrders: [...day.preOrders, ...uniqueOrders],
           customers: [...existingCustomers, ...newCustomers],
           products: [...existingProducts, ...newProducts],
         };
@@ -1652,84 +1671,91 @@ export default function App() {
           }
         }
 
-        setSaleDays(prev => {
-          const existing = prev.find(d => d.id === imported.id);
-          if (!existing) {
-            const ok = window.confirm(`יום מכירה "${imported.name}" לא נמצא מקומית.\nלהוסיף אותו כיום חדש?`);
-            return ok ? [...prev, imported] : prev;
+        // כל הלוגיקה מחוץ ל-setSaleDays כדי למנוע הפעלה כפולה של side effects
+        const currentDays = saleDays;
+        const existing = currentDays.find(d => d.id === imported.id) ?? currentDays.find(d => d.name === imported.name);
+
+        if (!existing) {
+          const ok = window.confirm(`יום מכירה "${imported.name}" לא נמצא מקומית.\nלהוסיף אותו כיום חדש?`);
+          if (ok) setSaleDays(prev => [...prev, imported]);
+          return;
+        }
+
+        // ── עסקאות: רק חדשות לפי id ──
+        const localTxIds = new Set((existing.transactions ?? []).map(t => t.id));
+        const newTxs = (imported.transactions ?? []).filter(t => !localTxIds.has(t.id));
+
+        // ── לקוחות: לפי id / טלפון מנורמל / שם+טלפון ──
+        const localNorm = (p: string) => String(p || "").replace(/\D/g, "").replace(/^0+/, "");
+        const localCustIds = new Set((existing.customers ?? []).map(c => c.id));
+        const localCustPhones = new Set((existing.customers ?? []).map(c => localNorm(c.phone)));
+        const localCustNamePhone = new Set((existing.customers ?? []).map(c => `${c.name}|${localNorm(c.phone)}`));
+        const newCustomers = (imported.customers ?? []).filter(c =>
+          !localCustIds.has(c.id) &&
+          !localCustPhones.has(localNorm(c.phone)) &&
+          !localCustNamePhone.has(`${c.name}|${localNorm(c.phone)}`)
+        );
+
+        // ── הזמנות: pending→paid מהטאבלט; לא לדרוס פריטים/הערות ──
+        let ordersUpdated = 0;
+        const importedOrderMap = new Map((imported.preOrders ?? []).map(o => [o.id, o]));
+        const mergedOrders = (existing.preOrders ?? []).map(o => {
+          const imp = importedOrderMap.get(o.id);
+          if (!imp) return o;
+          importedOrderMap.delete(o.id);
+          if (o.status === "pending" && imp.status === "paid") {
+            ordersUpdated++;
+            return { ...o, status: "paid" as const };
           }
-
-          // ── עסקאות: רק חדשות לפי id ──
-          const localTxIds = new Set((existing.transactions ?? []).map(t => t.id));
-          const newTxs = (imported.transactions ?? []).filter(t => !localTxIds.has(t.id));
-
-          // ── לקוחות: לפי id / טלפון מנורמל / שם+טלפון ──
-          const localNorm = (p: string) => String(p || "").replace(/\D/g, "").replace(/^0+/, "");
-          const localCustIds = new Set((existing.customers ?? []).map(c => c.id));
-          const localCustPhones = new Set((existing.customers ?? []).map(c => localNorm(c.phone)));
-          const localCustNamePhone = new Set((existing.customers ?? []).map(c => `${c.name}|${localNorm(c.phone)}`));
-          const newCustomers = (imported.customers ?? []).filter(c =>
-            !localCustIds.has(c.id) &&
-            !localCustPhones.has(localNorm(c.phone)) &&
-            !localCustNamePhone.has(`${c.name}|${localNorm(c.phone)}`)
-          );
-
-          // ── הזמנות: pending→paid מהטאבלט; לא לדרוס פריטים/הערות ──
-          let ordersUpdated = 0;
-          const importedOrderMap = new Map((imported.preOrders ?? []).map(o => [o.id, o]));
-          const mergedOrders = (existing.preOrders ?? []).map(o => {
-            const imp = importedOrderMap.get(o.id);
-            if (!imp) return o;
-            importedOrderMap.delete(o.id);
-            if (o.status === "pending" && imp.status === "paid") {
-              ordersUpdated++;
-              return { ...o, status: "paid" as const };
-            }
-            return o;
-          });
-          importedOrderMap.forEach(o => mergedOrders.push(o));
-
-          // ── מלאי: המחשב הראשי שומר על הכל חוץ מ-actualEndQty ──
-          let endQtyUpdated = 0;
-          const conflicts: string[] = [];
-          const importedInvMap = new Map((imported.inventory ?? []).map(i => [i.productId, i]));
-          const localInv = existing.inventory ?? [];
-          const mergedInv = localInv.map(local => {
-            const imp = importedInvMap.get(local.productId);
-            if (!imp) return local;
-            importedInvMap.delete(local.productId);
-            let actualEndQty = local.actualEndQty;
-            if (imp.actualEndQty != null) {
-              if (local.actualEndQty == null) {
-                actualEndQty = imp.actualEndQty;
-                endQtyUpdated++;
-              } else if (local.actualEndQty !== imp.actualEndQty) {
-                conflicts.push(`${local.productName}: מקומי=${local.actualEndQty}, מיובא=${imp.actualEndQty}`);
-              }
-            }
-            // המחשב הראשי שולט: requiredQty, plannedQty, actualInQty, warehouseCode, productName
-            return { ...local, actualEndQty };
-          });
-          // פריטי מלאי שקיימים בקובץ אך לא מקומית — מתעלמים (המחשב הראשי הוא מקור האמת)
-
-          const summary =
-            `סנכרון "${existing.name}" הושלם:\n` +
-            `• ${newTxs.length} עסקאות חדשות נוספו\n` +
-            `• ${newCustomers.length} לקוחות חדשים נוספו\n` +
-            `• ${ordersUpdated} הזמנות עודכנו ל-שולם\n` +
-            `• ${endQtyUpdated} ערכי "נספר בפועל" עודכנו` +
-            (conflicts.length ? `\n\n⚠️ ${conflicts.length} התנגשויות ב"נספר בפועל" (לא עודכנו):\n${conflicts.join("\n")}` : "");
-          alert(summary);
-
-          const merged: SaleDay = {
-            ...existing,
-            transactions: [...(existing.transactions ?? []), ...newTxs],
-            customers: [...(existing.customers ?? []), ...newCustomers],
-            preOrders: mergedOrders,
-            inventory: mergedInv,
-          };
-          return prev.map(d => d.id === existing.id ? merged : d);
+          return o;
         });
+        importedOrderMap.forEach(o => mergedOrders.push(o));
+
+        // ── מלאי: המחשב הראשי שומר על הכל חוץ מ-actualEndQty ──
+        let endQtyUpdated = 0;
+        const conflicts: string[] = [];
+        const importedInvMap = new Map((imported.inventory ?? []).map(i => [i.productId, i]));
+        const localInv = existing.inventory ?? [];
+        const mergedInv = localInv.map(local => {
+          const imp = importedInvMap.get(local.productId);
+          if (!imp) return local;
+          importedInvMap.delete(local.productId);
+          let actualEndQty = local.actualEndQty;
+          if (imp.actualEndQty != null) {
+            if (local.actualEndQty == null) {
+              actualEndQty = imp.actualEndQty;
+              endQtyUpdated++;
+            } else if (local.actualEndQty !== imp.actualEndQty) {
+              conflicts.push(`${local.productName}: מקומי=${local.actualEndQty}, מיובא=${imp.actualEndQty}`);
+            }
+          }
+          return { ...local, actualEndQty };
+        });
+
+        // ── מוצרים: הוסף מוצרים חדשים מהקובץ שלא קיימים מקומית (לפי id ואז לפי שם) ──
+        const localProductIds = new Set((existing.products ?? []).map(p => p.id));
+        const localProductNames = new Set((existing.products ?? []).map(p => p.name));
+        const newProducts = (imported.products ?? []).filter(p => !localProductIds.has(p.id) && !localProductNames.has(p.name));
+        const mergedProducts = [...(existing.products ?? []), ...newProducts];
+
+        const merged: SaleDay = {
+          ...existing,
+          transactions: [...(existing.transactions ?? []), ...newTxs],
+          customers: [...(existing.customers ?? []), ...newCustomers],
+          preOrders: mergedOrders,
+          inventory: mergedInv,
+          products: mergedProducts,
+        };
+        setSaleDays(prev => prev.map(d => d.id === existing.id ? merged : d));
+
+        const summary =
+          `סנכרון "${existing.name}" הושלם:\n` +
+          `• ${newTxs.length} עסקאות חדשות נוספו\n` +
+          `• ${newCustomers.length} לקוחות חדשים נוספו\n` +
+          `• ${ordersUpdated} הזמנות עודכנו ל-שולם\n` +
+          `• ${endQtyUpdated} ערכי "נספר בפועל" עודכנו` +
+          (conflicts.length ? `\n\n⚠️ ${conflicts.length} התנגשויות ב"נספר בפועל" (לא עודכנו):\n${conflicts.join("\n")}` : "");
+        alert(summary);
       } catch {
         alert("שגיאה בקריאת הקובץ — ודא שזהו קובץ ייצוא תקין");
       }
@@ -1765,6 +1791,8 @@ const exportBackup = () => {
     sellers,
     saleDays,
     warehouseItems,
+    pendingSales,
+    activityLog,
   };
 
   const blob = new Blob(
@@ -1823,8 +1851,10 @@ const importBackup = async (
     if (backup.saleDays)
       setSaleDays(backup.saleDays);
 
-    logActivity(`שחזור גיבוי — ${file.name}`);
     if (backup.warehouseItems) setWarehouseItems(backup.warehouseItems);
+    if (backup.pendingSales) setPendingSales(backup.pendingSales);
+    if (backup.activityLog) setActivityLog(backup.activityLog);
+    logActivity(`שחזור גיבוי — ${file.name}`);
     alert("הגיבוי שוחזר בהצלחה");
   } catch {
     alert("קובץ גיבוי לא תקין");
@@ -2097,6 +2127,9 @@ const importBackup = async (
   };
 
   const deleteCustomerForDay = (customerId: number, dayId: number) => {
+    const day = saleDays.find(d => d.id === dayId);
+    const customer = (day?.customers ?? []).find(c => c.id === customerId);
+    if (!window.confirm(`למחוק את הלקוח "${customer?.name ?? customerId}"?`)) return;
     setSaleDays(prev => prev.map(d => d.id === dayId ? { ...d, customers: (d.customers ?? []).filter(c => c.id !== customerId) } : d));
   };
 
@@ -2168,15 +2201,13 @@ const importBackup = async (
   const getCategorySalesReport = () => {
     return activeTransactions.reduce(
       (acc: Record<string, number>, transaction) => {
+        const grossTotal = transaction.items.reduce((s, i) => s + i.price * i.qty, 0);
+        if (grossTotal === 0) return acc;
+        const ratio = transaction.finalTotal / grossTotal;
         transaction.items.forEach((item) => {
-          const product = activeProducts.find(
-            (p) => p.id === item.id
-          );
-          const category =
-            product?.category || "לא ידוע";
-          acc[category] =
-            (acc[category] || 0) +
-            item.price * item.qty;
+          const product = activeProducts.find((p) => p.id === item.id);
+          const category = product?.category || "לא ידוע";
+          acc[category] = (acc[category] || 0) + item.price * item.qty * ratio;
         });
         return acc;
       },
@@ -2899,13 +2930,10 @@ const importBackup = async (
                         ערוך
                       </button>
                       <button
-                        onClick={() =>
-                          setActiveProducts((prev) =>
-                            prev.filter(
-                              (p) => p.id !== product.id
-                            )
-                          )
-                        }
+                        onClick={() => {
+                          if (!window.confirm(`למחוק את המוצר "${product.name}"?`)) return;
+                          setActiveProducts((prev) => prev.filter((p) => p.id !== product.id));
+                        }}
                         style={{
                           ...redButton,
                           padding: "6px 12px",
@@ -3114,7 +3142,7 @@ const importBackup = async (
                         הזמנות
                       </button>
                     )}
-                    {(day.type === "walkin" || day.type === "walkin-nodiscount") && (
+                    {(day.type === "walkin" || day.type === "walkin-nodiscount" || day.type === "open") && (
                       <button
                         onClick={() => { setShowCustomersModalDayId(day.id); setCustomersTabSearch(""); setEditingCustomerId(null); setHistoryCustomerId(null); }}
                         style={{ ...blueButton, background: "#0891b2", padding: "8px 14px", fontSize: "14px" }}
@@ -3326,7 +3354,10 @@ const importBackup = async (
                   </label>
                 </div>
                 <button
-                  onClick={() => setSellers(prev => prev.filter(s => s.name !== seller.name))}
+                  onClick={() => {
+                    if (!window.confirm(`למחוק את המוכר "${seller.name}"?`)) return;
+                    setSellers(prev => prev.filter(s => s.name !== seller.name));
+                  }}
                   style={redButton}
                 >
                   מחק
@@ -3554,6 +3585,7 @@ const importBackup = async (
           const tdStyle: React.CSSProperties = { padding: "8px 12px", fontSize: "13px", borderBottom: "1px solid #f1f5f9" };
           const inputNum = (val: number, onChange: (v: number) => void): React.ReactNode =>
             <input type="number" min={0} value={val || ""} onChange={e => onChange(Number(e.target.value) || 0)}
+              onWheel={e => (e.target as HTMLElement).blur()}
               style={{ width: "70px", padding: "4px 6px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "13px", textAlign: "center" }} />;
 
           // שורות מחושבות ליום הנבחר (מחושב פעם אחת, משמש בכל השלבים)
@@ -4893,30 +4925,40 @@ const importBackup = async (
               <span style={{ fontWeight: 700, fontSize: "18px" }}>
                 תשלום באשראי — ₪{effectiveFinalTotal.toFixed(2)} · {creditInstallments} תשלומים
               </span>
-              <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); }}
+              <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); setCreditPaymentSuccess(false); }}
                 style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#6b7280", lineHeight: "1" }}>✕</button>
             </div>
-            <iframe
-              id="NedarimFrame"
-              src="https://matara.pro/nedarimplus/iframe?language=he"
-              style={{ flex: 1, border: "none", width: "100%" }}
-              title="תשלום באשראי"
-            />
+            {creditPaymentSuccess ? (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "16px", background: "#f0fdf4" }}>
+                <div style={{ fontSize: "64px", lineHeight: 1 }}>✅</div>
+                <div style={{ fontSize: "22px", fontWeight: 800, color: "#15803d" }}>התשלום בוצע בהצלחה!</div>
+                <div style={{ fontSize: "14px", color: "#6b7280" }}>חוזר לקופה...</div>
+              </div>
+            ) : (
+              <iframe
+                id="NedarimFrame"
+                src="https://matara.pro/nedarimplus/iframe?language=he"
+                style={{ flex: 1, border: "none", width: "100%" }}
+                title="תשלום באשראי"
+              />
+            )}
             {creditPaymentError && (
-              <div style={{ padding: "10px 20px", background: "#fef2f2", color: "#dc2626", fontSize: "14px", fontWeight: 600, textAlign: "center", flexShrink: 0 }}>
+              <div style={{ padding: "12px 20px", background: "#fef2f2", color: "#dc2626", fontSize: "14px", fontWeight: 600, textAlign: "center", flexShrink: 0, borderTop: "1px solid #fecaca", direction: "rtl" }}>
                 {creditPaymentError}
               </div>
             )}
-            <div style={{ padding: "16px 20px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "12px", flexShrink: 0 }}>
-              <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); }}
-                style={{ flex: 1, padding: "12px", background: "#f1f5f9", color: "#374151", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 600, cursor: "pointer" }}>
-                ביטול
-              </button>
-              <button onClick={sendCreditPayment} disabled={creditPaymentProcessing}
-                style={{ flex: 2, padding: "12px", background: creditPaymentProcessing ? "#6b7280" : "#10b981", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: creditPaymentProcessing ? "not-allowed" : "pointer" }}>
-                {creditPaymentProcessing ? "⏳ מעבד תשלום..." : "✓ בצע תשלום"}
-              </button>
-            </div>
+            {!creditPaymentSuccess && (
+              <div style={{ padding: "16px 20px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "12px", flexShrink: 0 }}>
+                <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); setCreditPaymentSuccess(false); }}
+                  style={{ flex: 1, padding: "12px", background: "#f1f5f9", color: "#374151", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 600, cursor: "pointer" }}>
+                  ביטול
+                </button>
+                <button onClick={sendCreditPayment} disabled={creditPaymentProcessing}
+                  style={{ flex: 2, padding: "12px", background: creditPaymentProcessing ? "#6b7280" : "#10b981", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: creditPaymentProcessing ? "not-allowed" : "pointer" }}>
+                  {creditPaymentProcessing ? "⏳ מעבד תשלום..." : "✓ בצע תשלום"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
