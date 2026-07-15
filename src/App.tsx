@@ -1488,19 +1488,17 @@ export default function App() {
     const row = computeInventoryRow(inv, txs, preOrders);
     let reserved = row.reservedQty ?? null;
     let available = row.availableQty ?? null;
+    const cartQty = cart.filter(i => i.id === productId).reduce((s, i) => s + i.qty, 0);
     if (activePreOrderRef && preOrders && reserved !== null && available !== null) {
       const activeOrder = preOrders.find(o => o.id === activePreOrderRef.orderId && o.status === "pending");
       if (activeOrder) {
         const orderedQty = activeOrder.items.find(i => i.id === productId)?.qty ?? 0;
-        const cartQty = cart.find(i => i.id === productId)?.qty ?? 0;
-        const freed = Math.max(orderedQty - cartQty, 0);
-        reserved = reserved - freed;
-        available = available + freed;
+        // Items in cart that came from this order reduce the reservation (being fulfilled)
+        const fulfilledQty = Math.min(orderedQty, cartQty);
+        reserved = reserved - fulfilledQty;
+        // available (free stock for others) is unchanged — those items were reserved, not free
       }
     }
-    const cartQty = cart.find(i => i.id === productId)?.qty ?? 0;
-    // For non-preorder days available is null; subtract cart qty from remaining so the display is live
-    // For preorder days the available value already accounts for cart qty (via the activePreOrderRef logic above)
     return {
       remaining: row.remainingQty - cartQty,
       reserved,
