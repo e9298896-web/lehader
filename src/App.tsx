@@ -1493,10 +1493,8 @@ export default function App() {
       const activeOrder = preOrders.find(o => o.id === activePreOrderRef.orderId && o.status === "pending");
       if (activeOrder) {
         const orderedQty = activeOrder.items.find(i => i.id === productId)?.qty ?? 0;
-        // Items in cart that came from this order reduce the reservation (being fulfilled)
-        const fulfilledQty = Math.min(orderedQty, cartQty);
-        reserved = reserved - fulfilledQty;
-        // available (free stock for others) is unchanged — those items were reserved, not free
+        // Show only this order's still-to-be-picked qty; פנוי = general free stock (unchanged)
+        reserved = Math.max(orderedQty - cartQty, 0);
       }
     }
     return {
