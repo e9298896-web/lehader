@@ -1498,8 +1498,11 @@ export default function App() {
         available = available + freed;
       }
     }
+    const cartQty = cart.find(i => i.id === productId)?.qty ?? 0;
+    // For non-preorder days available is null; subtract cart qty from remaining so the display is live
+    // For preorder days the available value already accounts for cart qty (via the activePreOrderRef logic above)
     return {
-      remaining: row.remainingQty,
+      remaining: row.remainingQty - cartQty,
       reserved,
       available,
     };
