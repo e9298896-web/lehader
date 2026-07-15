@@ -705,7 +705,7 @@ export default function App() {
 
   const { freeQty: giftFreeQty, bagProduct: giftBagProduct, giftDiscount: giftBagDiscount } = getGiftBagInfo(cart);
 
-  // Auto-add gift bags at real price when trigger product qty increases
+  // Sync gift bag qty in cart to match trigger product qty (add or remove as needed)
   useEffect(() => {
     const products = activeSaleDay?.products ?? activeProducts;
     const bagProduct = products.find(p => p.isGiftBag);
@@ -715,11 +715,16 @@ export default function App() {
         .filter(i => products.find(p => p.id === i.id)?.giftTrigger)
         .reduce((s, i) => s + i.qty, 0);
       const bagQty = prev.filter(i => i.id === bagProduct.id).reduce((s, i) => s + i.qty, 0);
-      if (bagQty >= triggerQty) return prev; // already enough bags
-      const toAdd = triggerQty - bagQty;
-      const existing = prev.find(i => i.id === bagProduct.id);
-      if (existing) return prev.map(i => i.id === bagProduct.id ? { ...i, qty: i.qty + toAdd } : i);
-      return [...prev, { id: bagProduct.id, name: bagProduct.name, price: bagProduct.price, qty: toAdd }];
+      if (bagQty === triggerQty) return prev;
+      if (bagQty < triggerQty) {
+        const toAdd = triggerQty - bagQty;
+        const existing = prev.find(i => i.id === bagProduct.id);
+        if (existing) return prev.map(i => i.id === bagProduct.id ? { ...i, qty: i.qty + toAdd } : i);
+        return [...prev, { id: bagProduct.id, name: bagProduct.name, price: bagProduct.price, qty: toAdd }];
+      }
+      // bagQty > triggerQty: reduce to match
+      if (triggerQty === 0) return prev.filter(i => i.id !== bagProduct.id);
+      return prev.map(i => i.id === bagProduct.id ? { ...i, qty: triggerQty } : i);
     });
   }, [giftFreeQty]); // eslint-disable-line react-hooks/exhaustive-deps
 
