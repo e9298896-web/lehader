@@ -1489,14 +1489,6 @@ export default function App() {
     let reserved = row.reservedQty ?? null;
     let available = row.availableQty ?? null;
     const cartQty = cart.filter(i => i.id === productId).reduce((s, i) => s + i.qty, 0);
-    if (activePreOrderRef && preOrders && reserved !== null && available !== null) {
-      const activeOrder = preOrders.find(o => o.id === activePreOrderRef.orderId && o.status === "pending");
-      if (activeOrder) {
-        const orderedQty = activeOrder.items.find(i => i.id === productId)?.qty ?? 0;
-        // Show only this order's still-to-be-picked qty; פנוי = general free stock (unchanged)
-        reserved = Math.max(orderedQty - cartQty, 0);
-      }
-    }
     return {
       remaining: row.remainingQty - cartQty,
       reserved,
