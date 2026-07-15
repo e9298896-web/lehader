@@ -1113,8 +1113,9 @@ export default function App() {
     ];
 
     const total = displayItems.reduce((s, i) => s + i.price * i.qty, 0);
+    const checkbox = `<div style="width:18px;height:18px;border:2px solid #333;border-radius:2px;margin:0 auto;"></div>`;
     const rows = displayItems.map(i =>
-      `<tr><td>${i.name}</td><td style="text-align:center">${i.qty}</td><td>₪${i.price.toFixed(2)}</td><td>₪${(i.price * i.qty).toFixed(2)}</td></tr>`
+      `<tr><td style="text-align:center">${checkbox}</td><td style="text-align:center">${i.qty}</td><td>${i.name}</td><td style="text-align:center">₪${i.price.toFixed(2)}</td><td style="text-align:center">₪${(i.price * i.qty).toFixed(2)}</td></tr>`
     ).join("");
     const giftLine = bagProduct && giftFreeQtyOrder > 0
       ? `<div class="gift-note">🎁 מתנה! הינך זכאי ל-${giftFreeQtyOrder} ${bagProduct.name} במתנה</div>`
@@ -1128,7 +1129,7 @@ export default function App() {
         </div>
         ${order.notes ? `<div class="notes">הערות: ${order.notes}</div>` : ""}
         <table>
-          <thead><tr><th>מוצר</th><th>כמות</th><th>מחיר ליחידה</th><th>סה"כ</th></tr></thead>
+          <thead><tr><th style="width:36px;text-align:center">סימון</th><th style="width:44px;text-align:center">כמות</th><th>מוצר</th><th style="text-align:center">מחיר ליחידה</th><th style="text-align:center">סה"כ</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
         <div class="total">סה"כ לתשלום: ₪${total.toFixed(2)}</div>
