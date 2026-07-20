@@ -4339,6 +4339,7 @@ const importBackup = async (
                             <div style={{ fontWeight: 600 }}>{row.name}</div>
                             {row.notes && <div style={{ fontSize: "11px", color: "#9ca3af", marginTop: "2px" }}>{row.notes}</div>}
                           </td>
+                          <td style={tdSt}>{row.supplier ?? "—"}</td>
                           <td style={{ ...tdSt, textAlign: "center" }}>{row.baseWarehouseQty}</td>
                           <td style={{ ...tdSt, textAlign: "center", color: "#2563eb" }}>{row.packedTotal || "—"}</td>
                           <td style={{ ...tdSt, textAlign: "center", fontWeight: 700, color: row.remainingToPackQty > 0 ? "#7c3aed" : "#6b7280" }}>
@@ -4378,7 +4379,7 @@ const importBackup = async (
                     })}
                     {summaryRows.length === 0 && (
                       <tr>
-                        <td colSpan={9} style={{ ...tdSt, textAlign: "center", color: "#9ca3af", padding: "40px" }}>
+                        <td colSpan={10} style={{ ...tdSt, textAlign: "center", color: "#9ca3af", padding: "40px" }}>
                           לא הוגדרו מוצרי מחסן לשנה {warehouseYear} — לחץ על &quot;+ הוסף מוצר מחסן&quot;
                         </td>
                       </tr>
@@ -4387,7 +4388,7 @@ const importBackup = async (
                   {summaryRows.length > 0 && (
                     <tfoot>
                       <tr style={{ background: "#f8fafc" }}>
-                        <td style={{ ...tdSt, fontWeight: 700 }}>סה"כ</td>
+                        <td style={{ ...tdSt, fontWeight: 700 }} colSpan={2}>סה"כ</td>
                         <td style={{ ...tdSt, textAlign: "center", fontWeight: 700 }}>{summaryRows.reduce((s, r) => s + r.baseWarehouseQty, 0)}</td>
                         <td style={{ ...tdSt, textAlign: "center", fontWeight: 700, color: "#2563eb" }}>{summaryRows.reduce((s, r) => s + r.packedTotal, 0)}</td>
                         <td style={{ ...tdSt, textAlign: "center", fontWeight: 700, color: "#7c3aed" }}>{summaryRows.reduce((s, r) => s + r.remainingToPackQty, 0) || "—"}</td>
