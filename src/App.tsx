@@ -146,6 +146,8 @@ type WarehouseItem = {
   addedQty: number;
   adjustmentQty: number;
   notes?: string;
+  supplier?: string;
+  costPrice?: number;
 };
 
 type SaleDay = {
@@ -517,6 +519,9 @@ export default function App() {
   const [whAddedQty, setWhAddedQty] = useState("");
   const [whAdjQty, setWhAdjQty] = useState("");
   const [whNotes, setWhNotes] = useState("");
+  const [whSupplier, setWhSupplier] = useState("");
+  const [whCostPrice, setWhCostPrice] = useState("");
+  const [warehouseView, setWarehouseView] = useState<"items" | "suppliers">("items");
 
   const activeSaleDay = saleDays.find(d => d.isActive) ?? null;
 
@@ -1896,8 +1901,48 @@ const importBackup = async (
     });
   };
 
+  const getSupplierReport = (year: number) => {
+    const daysInYear = saleDays.filter(d => getSaleDayYear(d) === year);
+    const items = warehouseItems.filter(w => w.year === year);
+    const supplierMap = new Map<string, {
+      supplier: string;
+      products: Array<{
+        code: string; name: string;
+        receivedQty: number; costPrice: number; totalCost: number;
+        soldQty: number; soldAmount: number; profit: number;
+      }>;
+    }>();
+    for (const item of items) {
+      const supplier = item.supplier?.trim() || "ללא ספק";
+      if (!supplierMap.has(supplier)) supplierMap.set(supplier, { supplier, products: [] });
+      const entry = supplierMap.get(supplier)!;
+      const receivedQty = item.openingQty + item.addedQty + item.adjustmentQty;
+      const costPrice = item.costPrice ?? 0;
+      const totalCost = receivedQty * costPrice;
+      let soldQty = 0, soldAmount = 0;
+      for (const day of daysInYear) {
+        const inv = getInventoryForDay(day);
+        for (const invItem of inv.filter(i => i.warehouseCode === item.code)) {
+          const row = computeInventoryRow(invItem, day.transactions ?? []);
+          soldQty += row.soldQty;
+          soldAmount += row.soldAmount;
+        }
+      }
+      const profit = soldAmount - totalCost;
+      entry.products.push({ code: item.code, name: item.name, receivedQty, costPrice, totalCost, soldQty, soldAmount, profit });
+    }
+    return [...supplierMap.values()].map(s => ({
+      ...s,
+      totalReceived: s.products.reduce((a, p) => a + p.receivedQty, 0),
+      totalCost: s.products.reduce((a, p) => a + p.totalCost, 0),
+      totalSoldQty: s.products.reduce((a, p) => a + p.soldQty, 0),
+      totalSoldAmount: s.products.reduce((a, p) => a + p.soldAmount, 0),
+      totalProfit: s.products.reduce((a, p) => a + p.profit, 0),
+    }));
+  };
+
   const clearWarehouseForm = () => {
-    setWhCode(""); setWhName(""); setWhOpeningQty(""); setWhAddedQty(""); setWhAdjQty(""); setWhNotes("");
+    setWhCode(""); setWhName(""); setWhOpeningQty(""); setWhAddedQty(""); setWhAdjQty(""); setWhNotes(""); setWhSupplier(""); setWhCostPrice("");
     setWarehouseEditId(null); setWarehouseFormVisible(false);
   };
 
@@ -1915,6 +1960,8 @@ const importBackup = async (
       addedQty: Number(whAddedQty) || 0,
       adjustmentQty: Number(whAdjQty) || 0,
       notes: whNotes.trim() || undefined,
+      supplier: whSupplier.trim() || undefined,
+      costPrice: Number(whCostPrice) || undefined,
     };
     if (warehouseEditId != null) {
       setWarehouseItems(prev => prev.map(w => w.id === warehouseEditId ? item : w));
@@ -1928,6 +1975,7 @@ const importBackup = async (
     setWhCode(item.code); setWhName(item.name);
     setWhOpeningQty(String(item.openingQty)); setWhAddedQty(String(item.addedQty));
     setWhAdjQty(String(item.adjustmentQty)); setWhNotes(item.notes ?? "");
+    setWhSupplier(item.supplier ?? ""); setWhCostPrice(item.costPrice != null ? String(item.costPrice) : "");
     setWarehouseEditId(item.id); setWarehouseFormVisible(true);
   };
 
@@ -4131,7 +4179,15 @@ const importBackup = async (
                     style={{ padding: "8px 14px", background: "#16a34a", color: "white", border: "none", borderRadius: "10px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
                     ↓ ייצא לאקסל
                   </button>
-                  {!warehouseFormVisible && (
+                  <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", borderRadius: "10px", padding: "4px" }}>
+                    {(["items", "suppliers"] as const).map(v => (
+                      <button key={v} onClick={() => setWarehouseView(v)}
+                        style={{ padding: "6px 14px", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", background: warehouseView === v ? "white" : "transparent", color: warehouseView === v ? "#1e40af" : "#6b7280", boxShadow: warehouseView === v ? "0 1px 3px rgba(0,0,0,0.1)" : "none" }}>
+                        {v === "items" ? "מוצרים" : "ספקים"}
+                      </button>
+                    ))}
+                  </div>
+                  {!warehouseFormVisible && warehouseView === "items" && (
                     <button onClick={() => setWarehouseFormVisible(true)}
                       style={{ padding: "8px 14px", background: "#1e40af", color: "white", border: "none", borderRadius: "10px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
                       + הוסף מוצר מחסן
@@ -4166,6 +4222,14 @@ const importBackup = async (
                       <input type="number" value={whAdjQty} onChange={e => setWhAdjQty(e.target.value)} style={inpSt} />
                     </div>
                     <div>
+                      <label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>ספק</label>
+                      <input value={whSupplier} onChange={e => setWhSupplier(e.target.value)} placeholder="שם הספק" style={inpSt} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>מחיר עלות ליחידה (₪)</label>
+                      <input type="number" min={0} value={whCostPrice} onChange={e => setWhCostPrice(e.target.value)} placeholder="0.00" style={inpSt} />
+                    </div>
+                    <div>
                       <label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>הערות</label>
                       <input value={whNotes} onChange={e => setWhNotes(e.target.value)} style={inpSt} />
                     </div>
@@ -4183,12 +4247,72 @@ const importBackup = async (
                 </div>
               )}
 
+              {/* Supplier report view */}
+              {warehouseView === "suppliers" && (() => {
+                const supplierRows = getSupplierReport(warehouseYear);
+                return (
+                  <div style={{ overflowX: "auto" }}>
+                    {supplierRows.length === 0 && (
+                      <div style={{ textAlign: "center", color: "#9ca3af", padding: "40px" }}>אין מוצרים עם ספק מוגדר לשנה {warehouseYear}</div>
+                    )}
+                    {supplierRows.map(s => (
+                      <div key={s.supplier} style={{ marginBottom: "28px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#1e40af", color: "white", borderRadius: "10px 10px 0 0", padding: "10px 16px" }}>
+                          <span style={{ fontWeight: 800, fontSize: "15px" }}>ספק: {s.supplier}</span>
+                          <span style={{ fontSize: "13px", opacity: 0.9 }}>
+                            עלות: ₪{s.totalCost.toFixed(2)} | מכירות: ₪{s.totalSoldAmount.toFixed(2)} | רווח: ₪{s.totalProfit.toFixed(2)}
+                          </span>
+                        </div>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                          <thead>
+                            <tr style={{ background: "#f1f5f9" }}>
+                              <th style={{ ...thSt, position: "static" }}>מוצר</th>
+                              <th style={{ ...thSt, position: "static", textAlign: "center" }}>כמות שנכנסה</th>
+                              <th style={{ ...thSt, position: "static", textAlign: "center" }}>מחיר עלות</th>
+                              <th style={{ ...thSt, position: "static", textAlign: "center", color: "#dc2626" }}>עלות כוללת</th>
+                              <th style={{ ...thSt, position: "static", textAlign: "center", color: "#2563eb" }}>כמות נמכרה</th>
+                              <th style={{ ...thSt, position: "static", textAlign: "center", color: "#16a34a" }}>סכום נמכר</th>
+                              <th style={{ ...thSt, position: "static", textAlign: "center", color: "#7c3aed" }}>רווח</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {s.products.map(p => (
+                              <tr key={p.code} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                <td style={tdSt}><div style={{ fontWeight: 600 }}>{p.name}</div><div style={{ fontSize: "11px", color: "#9ca3af" }}>{p.code}</div></td>
+                                <td style={{ ...tdSt, textAlign: "center" }}>{p.receivedQty}</td>
+                                <td style={{ ...tdSt, textAlign: "center" }}>{p.costPrice > 0 ? `₪${p.costPrice.toFixed(2)}` : "—"}</td>
+                                <td style={{ ...tdSt, textAlign: "center", color: "#dc2626", fontWeight: 700 }}>{p.totalCost > 0 ? `₪${p.totalCost.toFixed(2)}` : "—"}</td>
+                                <td style={{ ...tdSt, textAlign: "center", color: "#2563eb", fontWeight: 700 }}>{p.soldQty || "—"}</td>
+                                <td style={{ ...tdSt, textAlign: "center", color: "#16a34a", fontWeight: 700 }}>{p.soldAmount > 0 ? `₪${p.soldAmount.toFixed(2)}` : "—"}</td>
+                                <td style={{ ...tdSt, textAlign: "center", fontWeight: 700, color: p.profit >= 0 ? "#7c3aed" : "#dc2626" }}>{p.totalCost > 0 || p.soldAmount > 0 ? `₪${p.profit.toFixed(2)}` : "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr style={{ background: "#f8fafc", fontWeight: 700 }}>
+                              <td style={tdSt}>סה"כ</td>
+                              <td style={{ ...tdSt, textAlign: "center" }}>{s.totalReceived}</td>
+                              <td style={tdSt}></td>
+                              <td style={{ ...tdSt, textAlign: "center", color: "#dc2626" }}>₪{s.totalCost.toFixed(2)}</td>
+                              <td style={{ ...tdSt, textAlign: "center", color: "#2563eb" }}>{s.totalSoldQty}</td>
+                              <td style={{ ...tdSt, textAlign: "center", color: "#16a34a" }}>₪{s.totalSoldAmount.toFixed(2)}</td>
+                              <td style={{ ...tdSt, textAlign: "center", color: s.totalProfit >= 0 ? "#7c3aed" : "#dc2626" }}>₪{s.totalProfit.toFixed(2)}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
               {/* Summary table */}
-              <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
+              {warehouseView === "items" && <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
                   <thead>
                     <tr>
                       <th style={thSt}>שם מוצר</th>
+                      <th style={thSt}>ספק</th>
                       <th style={{ ...thSt, textAlign: "center" }}>נכנס למחסן</th>
                       <th style={{ ...thSt, textAlign: "center", color: "#2563eb" }}>נארז</th>
                       <th style={{ ...thSt, textAlign: "center", color: "#7c3aed" }}>עוד לארוז</th>
@@ -4274,7 +4398,7 @@ const importBackup = async (
                     </tfoot>
                   )}
                 </table>
-              </div>
+              </div>}
 
               {/* Detail modal — 3 sections */}
               {detailItem && (
