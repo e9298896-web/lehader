@@ -89,6 +89,7 @@ type Transaction = {
   isReturn?: boolean;
   returnForId?: number;
   preOrderId?: number;
+  saleDayId?: number;
 };
 
 const defaultProducts: Product[] = [
@@ -166,9 +167,6 @@ type SaleDay = {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] =
-    useState("cashier");
-
   const [products, setProducts] =
     useState<Product[]>(() => {
       const saved =
@@ -522,6 +520,16 @@ export default function App() {
   const [whSupplier, setWhSupplier] = useState("");
   const [whCostPrice, setWhCostPrice] = useState("");
   const [warehouseView, setWarehouseView] = useState<"items" | "suppliers">("items");
+  const [collapsedSuppliers, setCollapsedSuppliers] = useState<Set<string>>(new Set());
+
+  // ── מצב ניווט חדש ──
+  const [cashierMode, setCashierMode] = useState(false);
+  const [adminTab, setAdminTab] = useState<"home" | "sales" | "inventory" | "reports" | "settings">("home");
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showMoreActions, setShowMoreActions] = useState(false);
+  const [saleDayDetailId, setSaleDayDetailId] = useState<number | null>(null);
+  const [saleDayDetailTab, setSaleDayDetailTab] = useState<"info" | "products" | "customers" | "inventory" | "transactions" | "summary">("info");
+  const [inventoryAdminTab, setInventoryAdminTab] = useState<"inventory" | "warehouse">("inventory");
 
   const activeSaleDay = saleDays.find(d => d.isActive) ?? null;
 
@@ -820,6 +828,7 @@ export default function App() {
     setCart([]);
     setManualDiscountAmount("");
     setShowCreditModal(false);
+    setShowPaymentModal(false);
     setCashReceived("");
     setCheckInstallments(1);
     setCreditInstallments(1);
@@ -896,6 +905,7 @@ export default function App() {
       customerName: selectedCustomer?.name || "מזדמן",
       customerPhone: selectedCustomer?.phone || "",
       savedCustomer: selectedCustomer ?? undefined,
+      saleDayId: activeSaleDay?.id,
     };
 
     setPendingSales((prev) => [
@@ -912,7 +922,7 @@ export default function App() {
     setCurrentSeller(sale.seller);
     setSelectedCustomer(sale.savedCustomer ?? null);
     setCustomerSearch("");
-    setActiveTab("cashier");
+    setCashierMode(true);
     setPendingSales((prev) => prev.filter((s) => s.id !== sale.id));
   };
 
@@ -1192,7 +1202,7 @@ export default function App() {
       ?? (order.customerName ? { id: 0, name: order.customerName, phone: order.customerPhone ?? "", idNumber: "", customerType: "1" as CustomerType } : null);
     setSelectedCustomer(customer);
     setCustomerSearch("");
-    setActiveTab("cashier");
+    setCashierMode(true);
     setActivePreOrderRef({ orderId, saleDayId });
   };
 
@@ -2416,56 +2426,48 @@ const importBackup = async (
 )}
         </button>
 
-        {/* 2. שורת הלשוניות תוצג רק אם אנחנו *לא* במסך מלא */}
-        {!isFullscreen && (
-          <div
-            style={{
-              background: "#083f1e",
-              display: "flex",
-              alignItems: "stretch",
-              position: "sticky",
-              top: 0,
-              zIndex: 1000,
-              borderBottom: "3px solid #248f4b",
-              paddingRight: "16px",
-              boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
-            }}
-          >
-            {[
-              ["cashier", "קופה"],
-              ["products", "מוצרים"],
-              ["transactions", "עסקאות"],
-              ["sellers", "מוכרים"],
-              ["saledays", "מכירות"],
-              ["inventory", "מלאי"],
-              ["warehouse", "מחסן"],
-              ["reports", "דוחות"],
-            ]
-              .filter(
-                ([key]) =>
-                  !((key === "reports" || key === "saledays" || key === "inventory" || key === "warehouse") && currentRole !== "admin")
-              )
-              .map(([key, label]) => (
-                <button
-                  key={key}
-                  onClick={() => setActiveTab(key)}
-                  style={{
-                    background: activeTab === key ? "rgba(255,255,255,0.12)" : "transparent",
-                    color: activeTab === key ? "#ffffff" : "rgba(255,255,255,0.6)",
-                    border: "none",
-                    borderBottom: activeTab === key ? "3px solid #e2e8f0" : "3px solid transparent",
-                    padding: "12px 18px",
-                    fontSize: "14px",
-                    fontWeight: activeTab === key ? "700" : "400",
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                    transition: "all 0.15s",
-                    marginBottom: "-3px",
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
+        {/* ── ניווט קופה (מצב מוכר) ── */}
+        {cashierMode && !isFullscreen && (
+          <div style={{ background: "#083f1e", display: "flex", alignItems: "center", padding: "0 16px", height: "52px", gap: "12px", boxShadow: "0 2px 6px rgba(0,0,0,0.15)", position: "sticky", top: 0, zIndex: 1000 }}>
+            <span style={{ fontWeight: 800, fontSize: "16px", color: "white" }}>{activeSaleDay?.name ?? "קופה"}</span>
+            {activeSaleDay && (
+              <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: "8px", padding: "2px 10px", fontSize: "12px", fontWeight: 700 }}>
+                {activeSaleDay.type === "walkin" ? "עם הנחה" : activeSaleDay.type === "walkin-nodiscount" ? "ללא הנחה" : activeSaleDay.type === "preorder" ? "הזמנות" : "פתוח"}
+              </span>
+            )}
+            <label style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", marginRight: "auto", display: "flex", alignItems: "center", gap: "6px" }}>
+              מוכר:&nbsp;
+              <select value={currentSeller} onChange={e => setCurrentSeller(e.target.value)} style={{ padding: "4px 8px", borderRadius: "8px", fontSize: "13px", border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.15)", color: "white" }}>
+                {sellers.map(s => <option key={s.name} value={s.name} style={{ background: "#083f1e" }}>{s.name}</option>)}
+              </select>
+            </label>
+            <button onClick={() => setCashierMode(false)} style={{ padding: "8px 16px", background: "rgba(255,255,255,0.15)", color: "white", border: "1px solid rgba(255,255,255,0.3)", borderRadius: "10px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
+              ← יציאה מהקופה
+            </button>
+          </div>
+        )}
+
+        {/* ── ניווט ניהול (מצב מנהל) ── */}
+        {!cashierMode && !isFullscreen && (
+          <div style={{ background: "#083f1e", display: "flex", alignItems: "stretch", position: "sticky", top: 0, zIndex: 1000, borderBottom: "3px solid #248f4b", paddingRight: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.15)" }}>
+            {([ ["home","ראשי"] as const, ...(currentRole === "admin" ? [["sales","מכירות"],["inventory","מלאי ומחסן"],["reports","דוחות"],["settings","הגדרות"]] as const : []) ]).map(([key, label]) => (
+              <button key={key} onClick={() => setAdminTab(key as typeof adminTab)}
+                style={{ background: adminTab === key ? "rgba(255,255,255,0.12)" : "transparent", color: adminTab === key ? "#ffffff" : "rgba(255,255,255,0.6)", border: "none", borderBottom: adminTab === key ? "3px solid #e2e8f0" : "3px solid transparent", padding: "12px 16px", fontSize: "14px", fontWeight: adminTab === key ? 700 : 400, cursor: "pointer", whiteSpace: "nowrap", transition: "all 0.15s", marginBottom: "-3px" }}>
+                {label}
+              </button>
+            ))}
+            <div style={{ marginRight: "auto", display: "flex", alignItems: "center", gap: "10px", padding: "6px 12px" }}>
+              <label style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", display: "flex", alignItems: "center", gap: "6px" }}>
+                מוכר:&nbsp;
+                <select value={currentSeller} onChange={e => setCurrentSeller(e.target.value)} style={{ padding: "4px 8px", borderRadius: "8px", fontSize: "13px", border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.15)", color: "white" }}>
+                  {sellers.map(s => <option key={s.name} value={s.name} style={{ background: "#083f1e" }}>{s.name}</option>)}
+                </select>
+              </label>
+              <button onClick={() => setCashierMode(true)} disabled={!activeSaleDay}
+                style={{ padding: "7px 14px", background: activeSaleDay ? "#2563eb" : "#475569", color: "white", border: "none", borderRadius: "10px", fontSize: "13px", fontWeight: 700, cursor: activeSaleDay ? "pointer" : "not-allowed", whiteSpace: "nowrap", opacity: activeSaleDay ? 1 : 0.6 }}>
+                🖥 כניסה לקופה
+              </button>
+            </div>
           </div>
         )}
 
@@ -2505,23 +2507,25 @@ const importBackup = async (
           </div>
         )}
 
-        <div style={{ padding: "20px" }}>
-          {activeTab === "cashier" && (
-          <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px", alignItems: "start" }}>
+        <div style={{ padding: cashierMode ? "0" : "20px" }}>
+          {cashierMode && !activeSaleDay && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "60vh", gap: "16px" }}>
+              <div style={{ fontSize: "64px" }}>🔒</div>
+              <h2 style={{ margin: 0, fontSize: "24px", color: "#374151" }}>אין כרגע מכירה פעילה</h2>
+              <p style={{ color: "#6b7280", fontSize: "16px", margin: 0 }}>יש לפנות למנהל להפעיל יום מכירה</p>
+              <button onClick={() => setCashierMode(false)} style={{ padding: "10px 24px", background: "#2563eb", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>← חזרה לניהול</button>
+            </div>
+          )}
+          {cashierMode && activeSaleDay && (
+          <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px", alignItems: "start", padding: "20px" }}>
 
             {/* ── פאנל שמאל: מוצרים ולקוח ── */}
             <div style={{ background: "white", borderRadius: "20px", padding: "20px", display: "flex", flexDirection: "column", gap: "0", height: isFullscreen ? "calc(100vh - 60px)" : "calc(100vh - 90px)", overflow: "hidden", position: "sticky", top: isFullscreen ? "20px" : "55px" }}>
               <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "14px", paddingBottom: "10px" }}>
 
-              {/* כותרת + מוכר + תפקיד */}
+              {/* כותרת */}
               <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                <h2 style={{ margin: 0, flex: 1, fontSize: "22px", textAlign: "right" }}>{activeSaleDay ? activeSaleDay.name : "מערכת להדר"}</h2>
-                <label style={{ fontSize: "13px", color: "#6b7280" }}>
-                  מוכר:&nbsp;
-                  <select value={currentSeller} onChange={e => setCurrentSeller(e.target.value)} style={{ ...inputStyle, padding: "4px 8px", fontSize: "13px", width: "auto" }}>
-                    {sellers.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-                  </select>
-                </label>
+                <h2 style={{ margin: 0, flex: 1, fontSize: "22px", textAlign: "right" }}>{activeSaleDay.name}</h2>
                 {activeSaleDay && (
                   <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "#fef3c7", border: "2px solid #f59e0b", borderRadius: "10px", padding: "4px 10px", fontSize: "13px", fontWeight: "bold" }}>
                     ⚡
@@ -2631,52 +2635,29 @@ const importBackup = async (
               </div>
               </div>
 
-              {/* תשלום */}
+              {/* כפתורי פעולה */}
               <div style={{ borderTop: "2px solid #e2e8f0", paddingTop: "12px", flexShrink: 0 }}>
-                <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
-                  {(["cash","check","credit"] as const).map(m => (
-                    <button key={m} onClick={() => { setPaymentMethod(m); setShowCreditModal(false); }}
-                      style={{ padding: "10px 14px", fontSize: "15px", fontWeight: 700, border: "2px solid", borderColor: paymentMethod === m ? "#2563eb" : "#e2e8f0", borderRadius: "12px", background: paymentMethod === m ? "#eff6ff" : "#f8fafc", color: paymentMethod === m ? "#2563eb" : "#6b7280", cursor: "pointer", whiteSpace: "nowrap" }}>
-                      {m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : "אשראי"}
-                    </button>
-                  ))}
-                  {paymentMethod === "cash" && <>
-                    <input type="number" placeholder="סכום שהתקבל" value={cashReceived} onChange={e => setCashReceived(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: "120px" }} />
-                    <span style={{ fontWeight: 700, fontSize: "15px", color: "#16a34a", whiteSpace: "nowrap" }}>
-                      עודף: ₪{Math.max(0, Number(cashReceived || 0) - effectiveFinalTotal).toFixed(2)}
-                    </span>
-                  </>}
-                  {(paymentMethod === "check" || paymentMethod === "credit") && <>
-                    <span style={{ fontSize: "14px", fontWeight: 600, whiteSpace: "nowrap" }}>תשלומים:</span>
-                    <select value={paymentMethod === "check" ? checkInstallments : creditInstallments}
-                      onChange={e => paymentMethod === "check" ? setCheckInstallments(Number(e.target.value)) : setCreditInstallments(Number(e.target.value))}
-                      style={{ ...inputStyle, width: "80px" }}>
-                      <option value={1}>1</option>
-                      <option value={2}>2</option>
-                      <option value={3}>3</option>
-                    </select>
-                  </>}
-                </div>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <button onClick={() => { setShowReturnModal(true); setReturnSearch(""); setReturnSourceId(null); setReturnQtys({}); }}
-                    style={{ flex: 1, padding: "12px", background: "#7c3aed", color: "white", border: "none", borderRadius: "12px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
-                    ↩ החזרה
-                  </button>
-                  <button onClick={savePendingSale}
-                    style={{ flex: 1, padding: "12px", background: "#f59e0b", color: "white", border: "none", borderRadius: "12px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
+                  <button onClick={savePendingSale} style={{ flex: 1, padding: "13px", background: "#f59e0b", color: "white", border: "none", borderRadius: "12px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
                     ⏸ שמירה
                   </button>
-                  {paymentMethod === "credit" ? (
-                    <button onClick={() => setShowCreditModal(true)}
-                      style={{ flex: 2, padding: "12px", background: "#10b981", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>
-                      מעבר לתשלום באשראי
+                  <div style={{ position: "relative", flex: 1 }}>
+                    <button onClick={() => setShowMoreActions(v => !v)} style={{ width: "100%", padding: "13px", background: "#7c3aed", color: "white", border: "none", borderRadius: "12px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
+                      ↩ פעולות נוספות
                     </button>
-                  ) : (
-                    <button onClick={completeSale}
-                      style={{ flex: 2, padding: "12px", background: "#2563eb", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>
-                      ✓ סיום עסקה
-                    </button>
-                  )}
+                    {showMoreActions && (
+                      <div style={{ position: "absolute", bottom: "110%", right: 0, background: "white", border: "1px solid #e2e8f0", borderRadius: "12px", boxShadow: "0 4px 16px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "160px", overflow: "hidden" }}>
+                        <button onClick={() => { setShowReturnModal(true); setReturnSearch(""); setReturnSourceId(null); setReturnQtys({}); setShowMoreActions(false); }}
+                          style={{ width: "100%", padding: "12px 16px", background: "white", border: "none", textAlign: "right", fontSize: "14px", fontWeight: 700, color: "#7c3aed", cursor: "pointer" }}>
+                          ↩ החזרת מוצר
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => { if (cart.length > 0) setShowPaymentModal(true); }} disabled={cart.length === 0}
+                    style={{ flex: 2, padding: "13px", background: cart.length > 0 ? "#2563eb" : "#94a3b8", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: cart.length > 0 ? "pointer" : "not-allowed" }}>
+                    💳 מעבר לתשלום
+                  </button>
                 </div>
               </div>
             </div>
@@ -2758,29 +2739,256 @@ const importBackup = async (
                 </div>
               </div>
 
-              {/* עסקאות בהמתנה */}
-              {pendingSales.length > 0 && (
-                <div style={{ borderTop: "2px solid #f1f5f9", marginTop: "10px", paddingTop: "8px" }}>
-                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#92400e", marginBottom: "6px" }}>⏸ בהמתנה ({pendingSales.length})</div>
-                  <div style={{ maxHeight: "140px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "4px" }}>
-                    {pendingSales.map((sale) => (
-                      <div key={sale.id} style={{ display: "flex", alignItems: "center", gap: "8px", background: "#fef3c7", borderRadius: "8px", padding: "6px 10px", fontSize: "13px" }}>
-                        <span style={{ fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sale.customerName || "ללא שם"}</span>
-                        <span style={{ color: "#6b7280", whiteSpace: "nowrap" }}>₪{sale.finalTotal}</span>
-                        <button onClick={() => resumePendingSale(sale)} style={{ ...blueButton, padding: "4px 10px", fontSize: "12px", whiteSpace: "nowrap" }}>חזור</button>
-                        <button onClick={() => deletePendingSale(sale.id)} style={{ ...redButton, padding: "4px 10px", fontSize: "12px" }}>✕</button>
+              {/* עסקאות בהמתנה — מסוננות ליום הפעיל */}
+              {(() => {
+                const visiblePending = activeSaleDay
+                  ? pendingSales.filter(s => !s.saleDayId || s.saleDayId === activeSaleDay.id)
+                  : pendingSales.filter(s => !s.saleDayId);
+                return visiblePending.length > 0 ? (
+                  <div style={{ borderTop: "2px solid #f1f5f9", marginTop: "10px", paddingTop: "8px" }}>
+                    <div style={{ fontSize: "13px", fontWeight: 700, color: "#92400e", marginBottom: "6px" }}>⏸ בהמתנה ({visiblePending.length})</div>
+                    <div style={{ maxHeight: "140px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "4px" }}>
+                      {visiblePending.map((sale) => (
+                        <div key={sale.id} style={{ display: "flex", alignItems: "center", gap: "8px", background: "#fef3c7", borderRadius: "8px", padding: "6px 10px", fontSize: "13px" }}>
+                          <span style={{ fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sale.customerName || "ללא שם"}</span>
+                          <span style={{ color: "#6b7280", whiteSpace: "nowrap" }}>₪{sale.finalTotal}</span>
+                          <button onClick={() => resumePendingSale(sale)} style={{ ...blueButton, padding: "4px 10px", fontSize: "12px", whiteSpace: "nowrap" }}>חזור</button>
+                          <button onClick={() => deletePendingSale(sale.id)} style={{ ...redButton, padding: "4px 10px", fontSize: "12px" }}>✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null;
+              })()}
+            </div>
+
+          </div>
+          )}
+
+          {/* ═══════════════════════════════════════════════════
+              מסך ראשי
+          ═══════════════════════════════════════════════════ */}
+          {!cashierMode && adminTab === "home" && (
+            <div style={{ maxWidth: "900px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "20px" }}>
+              {/* כרטיס מכירה פעילה */}
+              {!activeSaleDay ? (
+                <div style={{ background: "white", borderRadius: "20px", padding: "40px", textAlign: "center" }}>
+                  <div style={{ fontSize: "56px", marginBottom: "12px" }}>📋</div>
+                  <h2 style={{ margin: "0 0 8px 0", color: "#374151" }}>אין יום מכירה פעיל</h2>
+                  <p style={{ color: "#6b7280", marginBottom: "20px" }}>בחר יום מכירה קיים או הוסף חדש</p>
+                  <button onClick={() => setAdminTab("sales")} style={{ padding: "12px 28px", background: "#2563eb", color: "white", border: "none", borderRadius: "12px", fontSize: "16px", fontWeight: 700, cursor: "pointer" }}>→ עבור לניהול מכירות</button>
+                </div>
+              ) : (
+                <div style={{ background: "white", borderRadius: "20px", padding: "28px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+                    <h2 style={{ margin: 0, fontSize: "22px" }}>{activeSaleDay.name}</h2>
+                    <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: "10px", padding: "4px 12px", fontSize: "13px", fontWeight: 700 }}>
+                      {activeSaleDay.type === "walkin" ? "הנחה" : activeSaleDay.type === "walkin-nodiscount" ? "ללא הנחה" : activeSaleDay.type === "preorder" ? "הזמנות" : "פתוח"}
+                    </span>
+                    {activeSaleDay.date && <span style={{ color: "#6b7280", fontSize: "14px" }}>{activeSaleDay.date}</span>}
+                  </div>
+                  {/* סטטיסטיקות */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "12px", marginBottom: "24px" }}>
+                    {[
+                      { label: "עסקאות", value: activeTransactions.filter(t => !t.isReturn).length, color: "#2563eb" },
+                      { label: "סך מכירות", value: `₪${activeTransactions.reduce((s, t) => s + (t.isReturn ? 0 : t.finalTotal), 0).toFixed(0)}`, color: "#16a34a" },
+                      { label: "בהמתנה", value: pendingSales.filter(s => !s.saleDayId || s.saleDayId === activeSaleDay.id).length, color: "#f59e0b" },
+                      ...(activeSaleDay.type === "preorder" ? [{ label: "הזמנות ממתינות", value: activeSaleDay.preOrders.filter(o => o.status === "pending").length, color: "#7c3aed" }] : []),
+                    ].map(item => (
+                      <div key={item.label} style={{ background: "#f8fafc", borderRadius: "12px", padding: "16px", textAlign: "center" }}>
+                        <div style={{ fontSize: "28px", fontWeight: 800, color: item.color }}>{item.value}</div>
+                        <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "4px" }}>{item.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* כפתורים מהירים */}
+                  <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                    <button onClick={() => setCashierMode(true)} style={{ padding: "12px 24px", background: "#2563eb", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>🖥 כניסה לקופה</button>
+                    <button onClick={() => { setAdminTab("sales"); setSaleDayDetailId(activeSaleDay.id); setSaleDayDetailTab("info"); }} style={{ padding: "12px 24px", background: "#059669", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>⚙ ניהול המכירה</button>
+                    <button onClick={() => setAdminTab("inventory")} style={{ padding: "12px 24px", background: "#7c3aed", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>📦 מלאי ומחסן</button>
+                    <button onClick={exportBackup} style={{ padding: "12px 24px", background: "#64748b", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>💾 הורדת גיבוי</button>
+                  </div>
+                </div>
+              )}
+              {/* ימי מכירה אחרונים */}
+              {saleDays.length > 0 && (
+                <div style={{ background: "white", borderRadius: "20px", padding: "24px" }}>
+                  <h3 style={{ margin: "0 0 16px 0", fontSize: "17px" }}>ימי מכירה אחרונים</h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {[...saleDays].slice(0, 5).map(day => (
+                      <div key={day.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 14px", background: day.isActive ? "#f0fdf4" : "#f8fafc", borderRadius: "10px", border: day.isActive ? "1px solid #86efac" : "1px solid transparent" }}>
+                        {day.isActive && <span style={{ fontSize: "12px", fontWeight: 700, color: "#15803d", background: "#dcfce7", borderRadius: "6px", padding: "2px 8px" }}>פעיל</span>}
+                        <span style={{ fontWeight: 600 }}>{day.name}</span>
+                        <span style={{ fontSize: "13px", color: "#6b7280" }}>{day.date}</span>
+                        <span style={{ marginRight: "auto", fontSize: "13px", color: "#6b7280" }}>{(day.transactions ?? []).filter(t => !t.isReturn).length} עסקאות</span>
+                        <button onClick={() => { setAdminTab("sales"); setSaleDayDetailId(day.id); setSaleDayDetailTab("info"); }} style={{ padding: "5px 12px", background: "#2563eb", color: "white", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>פתח →</button>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
             </div>
+          )}
 
-          </div>
-        )}
+          {/* ═══════════════════════════════════════════════════
+              תצוגת פרטי יום מכירה (sub-tabs)
+          ═══════════════════════════════════════════════════ */}
+          {!cashierMode && adminTab === "sales" && saleDayDetailId !== null && (() => {
+            const detailDay = saleDays.find(d => d.id === saleDayDetailId);
+            if (!detailDay) return <div style={{ padding: "40px", textAlign: "center", color: "#9ca3af" }}>יום מכירה לא נמצא</div>;
+            const subTabs: Array<{ key: typeof saleDayDetailTab; label: string }> = [
+              { key: "info", label: "פרטים" },
+              { key: "products", label: "מוצרים" },
+              { key: "customers", label: detailDay.type === "preorder" ? "הזמנות" : "לקוחות" },
+              { key: "inventory", label: "מלאי" },
+              { key: "transactions", label: "עסקאות" },
+              { key: "summary", label: "סיכום וייצוא" },
+            ];
+            return (
+              <div style={{ background: "white", borderRadius: "24px", padding: "24px", maxHeight: "calc(100vh - 70px)", display: "flex", flexDirection: "column" }}>
+                {/* כותרת + חזרה */}
+                <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+                  <button onClick={() => setSaleDayDetailId(null)} style={{ padding: "6px 14px", background: "#f1f5f9", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>← חזרה לרשימה</button>
+                  <h2 style={{ margin: 0, fontSize: "20px" }}>{detailDay.name}</h2>
+                  {detailDay.isActive && <span style={{ background: "#dcfce7", color: "#15803d", borderRadius: "8px", padding: "3px 10px", fontSize: "12px", fontWeight: 700 }}>פעיל כעת</span>}
+                  <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: "8px", padding: "3px 10px", fontSize: "12px", fontWeight: 700 }}>
+                    {detailDay.type === "walkin" ? "עם הנחה" : detailDay.type === "walkin-nodiscount" ? "ללא הנחה" : detailDay.type === "preorder" ? "הזמנות" : "פתוח"}
+                  </span>
+                </div>
+                {/* לשוניות פנימיות */}
+                <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", borderRadius: "12px", padding: "4px", marginBottom: "20px", flexWrap: "wrap" }}>
+                  {subTabs.map(s => (
+                    <button key={s.key} onClick={() => {
+                      setSaleDayDetailTab(s.key);
+                      if (s.key === "inventory") { setInventorySelectedDayId(detailDay.id); setInventoryStep("planning"); }
+                    }}
+                      style={{ flex: 1, padding: "9px 8px", border: "none", borderRadius: "9px", fontSize: "13px", fontWeight: 700, cursor: "pointer", background: saleDayDetailTab === s.key ? "white" : "transparent", color: saleDayDetailTab === s.key ? "#1e40af" : "#64748b", boxShadow: saleDayDetailTab === s.key ? "0 1px 3px rgba(0,0,0,0.1)" : "none", whiteSpace: "nowrap" }}>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+                {/* תוכן פרטים */}
+                {saleDayDetailTab === "info" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "14px", overflowY: "auto" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                      <div><span style={{ fontSize: "13px", color: "#6b7280" }}>שם:</span> <span style={{ fontWeight: 600 }}>{detailDay.name}</span></div>
+                      <div><span style={{ fontSize: "13px", color: "#6b7280" }}>תאריך:</span> <span style={{ fontWeight: 600 }}>{detailDay.date || "—"}</span></div>
+                      <div><span style={{ fontSize: "13px", color: "#6b7280" }}>סוג:</span> <span style={{ fontWeight: 600 }}>{detailDay.type}</span></div>
+                      <div><span style={{ fontSize: "13px", color: "#6b7280" }}>עסקאות:</span> <span style={{ fontWeight: 600 }}>{(detailDay.transactions ?? []).filter(t => !t.isReturn).length}</span></div>
+                    </div>
+                    <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                      <button onClick={() => toggleSaleDay(detailDay.id)}
+                        style={{ padding: "10px 20px", background: detailDay.isActive ? "#dc2626" : "#16a34a", color: "white", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
+                        {detailDay.isActive ? "⏹ כבה מכירה" : "▶ הפעל מכירה"}
+                      </button>
+                      <button onClick={() => deleteSaleDay(detailDay.id)}
+                        style={{ padding: "10px 20px", background: "#ef4444", color: "white", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
+                        🗑 מחק יום מכירה
+                      </button>
+                    </div>
+                    {detailDay.type === "walkin" && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span style={{ fontSize: "14px", fontWeight: 600 }}>הנחה כללית:</span>
+                        <input type="number" min={0} max={100} value={detailDay.discountPercent || 0}
+                          onChange={e => setSaleDays(prev => prev.map(d => d.id === detailDay.id ? { ...d, discountPercent: Number(e.target.value) } : d))}
+                          style={{ ...inputStyle, width: "80px" }} />
+                        <span style={{ fontSize: "13px", color: "#6b7280" }}>%</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* תוכן לקוחות/הזמנות */}
+                {saleDayDetailTab === "customers" && (
+                  <div style={{ overflowY: "auto", flex: 1 }}>
+                    {detailDay.type === "preorder" ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                        <div style={{ display: "flex", gap: "10px" }}>
+                          <button onClick={() => openPreOrderForm(detailDay.id)} style={{ ...blueButton, background: "#10b981" }}>+ הזמנה חדשה</button>
+                          <button onClick={() => { setShowAllOrdersModal(true); setAllOrdersFilterDayId(detailDay.id); setAllOrdersSearch(""); }} style={{ ...blueButton }}>כל ההזמנות</button>
+                        </div>
+                        {detailDay.preOrders.filter(o => o.status === "pending").length === 0
+                          ? <div style={{ color: "#9ca3af", padding: "20px", textAlign: "center" }}>אין הזמנות ממתינות</div>
+                          : detailDay.preOrders.filter(o => o.status === "pending").map(order => (
+                            <div key={order.id} style={{ background: "#f0fdf4", borderRadius: "10px", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <div>
+                                <div style={{ fontWeight: 700 }}>{order.customerName}</div>
+                                <div style={{ fontSize: "13px", color: "#6b7280" }}>{order.customerPhone}</div>
+                              </div>
+                              <div style={{ display: "flex", gap: "8px" }}>
+                                <button onClick={() => openPreOrderForm(detailDay.id, order)} style={{ ...blueButton, padding: "5px 12px", fontSize: "12px" }}>ערוך</button>
+                                <button onClick={() => printSingleOrder(order, detailDay.name)} style={{ padding: "5px 12px", background: "#0f766e", color: "white", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>הדפס</button>
+                              </div>
+                            </div>
+                          ))
+                        }
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                        <button onClick={() => { setShowCustomersModalDayId(detailDay.id); setCustomersTabSearch(""); setEditingCustomerId(null); setHistoryCustomerId(null); }} style={{ ...blueButton, alignSelf: "flex-start" }}>ניהול לקוחות</button>
+                        <div style={{ color: "#6b7280", fontSize: "14px" }}>לקוחות רשומים: {(detailDay.customers ?? []).length}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* תוכן עסקאות ביום הנבחר */}
+                {saleDayDetailTab === "transactions" && (
+                  <div style={{ overflowY: "auto", flex: 1 }}>
+                    {(detailDay.transactions ?? []).length === 0
+                      ? <div style={{ color: "#9ca3af", textAlign: "center", padding: "32px" }}>אין עסקאות</div>
+                      : (detailDay.transactions ?? []).map(tx => (
+                        <div key={tx.id} style={{ borderBottom: "1px solid #f1f5f9", padding: "10px 0" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ fontWeight: 600 }}>{tx.customerName}</span>
+                            <span style={{ color: tx.isReturn ? "#dc2626" : "#2563eb", fontWeight: 700 }}>₪{tx.finalTotal.toFixed(2)}{tx.isReturn ? " (החזרה)" : ""}</span>
+                          </div>
+                          <div style={{ fontSize: "12px", color: "#6b7280" }}>{tx.date} | {tx.seller} | {tx.paymentMethod}</div>
+                        </div>
+                      ))
+                    }
+                  </div>
+                )}
+                {/* סיכום וייצוא */}
+                {saleDayDetailTab === "summary" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "16px", overflowY: "auto" }}>
+                    <div style={{ background: "#f8fafc", borderRadius: "12px", padding: "16px" }}>
+                      <div style={{ fontSize: "15px", marginBottom: "6px" }}>סה"כ עסקאות: <strong>{(detailDay.transactions ?? []).filter(t => !t.isReturn).length}</strong></div>
+                      <div style={{ fontSize: "15px" }}>סה"כ מכירות: <strong>₪{(detailDay.transactions ?? []).reduce((s, t) => s + (t.isReturn ? 0 : t.finalTotal), 0).toFixed(2)}</strong></div>
+                    </div>
+                    <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                      <button onClick={() => exportSaleDayData(detailDay.id)} style={{ ...blueButton, background: "#2563eb" }}>ייצוא JSON</button>
+                      <label style={{ ...blueButton, background: "#7c3aed", cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+                        ייבוא JSON <input type="file" accept=".json" style={{ display: "none" }} onChange={importSaleDayData} />
+                      </label>
+                    </div>
+                  </div>
+                )}
+                {/* מלאי — מוצג בחלונית הנפרדת של המלאי */}
+                {saleDayDetailTab === "inventory" && (
+                  <div style={{ color: "#6b7280", textAlign: "center", padding: "20px" }}>
+                    עבור ללשונית <strong>מלאי ומחסן</strong> לניהול מלאי יום זה — היום {detailDay.name} נבחר אוטומטית.
+                    <br />
+                    <button onClick={() => { setAdminTab("inventory"); setInventoryAdminTab("inventory"); }} style={{ marginTop: "14px", ...blueButton }}>→ עבור למלאי</button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
+          {/* ═══════════════════════════════════════════════════
+              toggle מלאי / מחסן
+          ═══════════════════════════════════════════════════ */}
+          {!cashierMode && adminTab === "inventory" && (
+            <div style={{ marginBottom: "16px", display: "flex", gap: "4px", background: "white", borderRadius: "14px", padding: "6px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", width: "fit-content" }}>
+              {(["inventory","warehouse"] as const).map(v => (
+                <button key={v} onClick={() => setInventoryAdminTab(v)}
+                  style={{ padding: "8px 20px", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: 700, cursor: "pointer", background: inventoryAdminTab === v ? "#1e40af" : "transparent", color: inventoryAdminTab === v ? "white" : "#64748b", transition: "all 0.15s" }}>
+                  {v === "inventory" ? "מלאי" : "מחסן"}
+                </button>
+              ))}
+            </div>
+          )}
 
-    {activeTab === "products" && (
+    {!cashierMode && adminTab === "sales" && saleDayDetailId !== null && saleDayDetailTab === "products" && (
           <div
             style={{
               background: "white",
@@ -2996,7 +3204,7 @@ const importBackup = async (
           </div>
         )}
 
-        {activeTab === "transactions" && (
+        {!cashierMode && adminTab === "sales" && saleDayDetailId !== null && saleDayDetailTab === "transactions" && (
           <div
             style={{
               background: "white",
@@ -3080,7 +3288,7 @@ const importBackup = async (
           </div>
         )}
 
-        {activeTab === "saledays" && (
+        {!cashierMode && adminTab === "sales" && saleDayDetailId === null && (
           <div style={{ background: "white", borderRadius: "24px", padding: "24px", display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 70px)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
               <h2 style={{ margin: 0 }}>מכירות</h2>
@@ -3173,6 +3381,12 @@ const importBackup = async (
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <button
+                      onClick={() => { setSaleDayDetailId(day.id); setSaleDayDetailTab("info"); }}
+                      style={{ ...blueButton, background: "#0f766e", padding: "8px 14px", fontSize: "14px" }}
+                    >
+                      פתח →
+                    </button>
                     <button
                       onClick={() => toggleSaleDay(day.id)}
                       style={{ ...blueButton, background: day.isActive ? "#dc2626" : "#2563eb", padding: "8px 14px", fontSize: "14px" }}
@@ -3335,7 +3549,7 @@ const importBackup = async (
           </div>
         )}
 
-        {activeTab === "sellers" && (
+        {!cashierMode && adminTab === "settings" && (
           <div
             style={{
               background: "white",
@@ -3410,10 +3624,54 @@ const importBackup = async (
               </div>
             ))}
             </div>
+
+            {/* גיבוי ושחזור */}
+            <div style={{ marginTop: "32px", borderTop: "2px solid #f1f5f9", paddingTop: "24px" }}>
+              <h3 style={{ margin: "0 0 12px 0", fontSize: "16px", color: "#374151" }}>גיבוי ושחזור</h3>
+              <p style={{ fontSize: "13px", color: "#6b7280", marginBottom: "14px" }}>שחזור גיבוי ידרוס את כל הנתונים הקיימים.</p>
+              <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
+                <button onClick={exportBackup} style={blueButton}>💾 הורדת גיבוי מלא</button>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", padding: "10px 16px", background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: "12px", cursor: "pointer", fontSize: "14px", fontWeight: 700, color: "#92400e" }}>
+                  📂 שחזור מגיבוי
+                  <input type="file" accept=".json" onChange={importBackup} style={{ display: "none" }} />
+                </label>
+              </div>
+            </div>
+
+            {/* יומן פעילות */}
+            {activityLog.length > 0 && (
+              <div style={{ marginTop: "32px", borderTop: "2px solid #f1f5f9", paddingTop: "24px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                  <h3 style={{ margin: 0, fontSize: "16px", color: "#374151" }}>יומן פעילות</h3>
+                  <button onClick={() => { if (window.confirm("למחוק את יומן הפעילות?")) setActivityLog([]); }}
+                    style={{ padding: "4px 12px", background: "#ef4444", color: "white", border: "none", borderRadius: "8px", fontSize: "12px", cursor: "pointer" }}>נקה יומן</button>
+                </div>
+                <div style={{ overflowX: "auto", maxHeight: "300px", overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                    <thead>
+                      <tr>
+                        <th style={{ padding: "8px 12px", textAlign: "right", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0 }}>תאריך</th>
+                        <th style={{ padding: "8px 12px", textAlign: "right", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0 }}>מוכר</th>
+                        <th style={{ padding: "8px 12px", textAlign: "right", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0 }}>פעולה</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activityLog.slice(0, 100).map(entry => (
+                        <tr key={entry.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                          <td style={{ padding: "7px 12px", color: "#64748b", whiteSpace: "nowrap" }}>{entry.date}</td>
+                          <td style={{ padding: "7px 12px" }}>{entry.seller}</td>
+                          <td style={{ padding: "7px 12px" }}>{entry.action}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {activeTab === "reports" && (
+        {!cashierMode && adminTab === "reports" && (
           <div
             style={{
               background: "white",
@@ -3560,68 +3818,12 @@ const importBackup = async (
     flexWrap: "wrap",
   }}
 >
-  <button
-    onClick={exportData}
-    style={blueButton}
-  >
-    ייצוא לאקסל
-  </button>
-
-  <button
-    onClick={exportBackup}
-    style={blueButton}
-  >
-    גיבוי מלא
-  </button>
-
-  <input
-    type="file"
-    accept=".json"
-    onChange={importBackup}
-    style={{
-      padding: "10px",
-      background: "white",
-      borderRadius: "12px",
-      border: "1px solid #cbd5e1",
-    }}
-  />
+  <button onClick={exportData} style={blueButton}>ייצוא לאקסל</button>
 </div>
-
-            {activityLog.length > 0 && (
-              <div style={{ marginTop: "32px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                  <h3 style={{ margin: 0, fontSize: "16px", color: "#374151" }}>יומן פעילות</h3>
-                  <button onClick={() => { if (window.confirm("למחוק את יומן הפעילות?")) setActivityLog([]); }}
-                    style={{ padding: "4px 12px", background: "#ef4444", color: "white", border: "none", borderRadius: "8px", fontSize: "12px", cursor: "pointer" }}>
-                    נקה יומן
-                  </button>
-                </div>
-                <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-                    <thead>
-                      <tr>
-                        <th style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 }}>תאריך</th>
-                        <th style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 }}>מוכר</th>
-                        <th style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 }}>פעולה</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activityLog.slice(0, 100).map(entry => (
-                        <tr key={entry.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                          <td style={{ padding: "7px 12px", color: "#64748b", whiteSpace: "nowrap" }}>{entry.date}</td>
-                          <td style={{ padding: "7px 12px", color: "#374151" }}>{entry.seller}</td>
-                          <td style={{ padding: "7px 12px", color: "#374151" }}>{entry.action}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
           </div>
         )}
 
-        {activeTab === "inventory" && (() => {
+        {!cashierMode && adminTab === "inventory" && inventoryAdminTab === "inventory" && (() => {
           const selectedDay = inventorySelectedDayId ? saleDays.find(d => d.id === inventorySelectedDayId) : null;
           const years = [...new Set(saleDays.map(d => getSaleDayYear(d)))].sort((a, b) => b - a);
           const daysInYear = saleDays.filter(d => getSaleDayYear(d) === inventorySelectedYear);
@@ -4154,7 +4356,7 @@ const importBackup = async (
           );
         })()}
 
-        {activeTab === "warehouse" && (() => {
+        {!cashierMode && adminTab === "inventory" && inventoryAdminTab === "warehouse" && (() => {
           const yearOptions = [...new Set([
             ...warehouseItems.map(w => w.year),
             new Date().getFullYear(),
@@ -4169,7 +4371,17 @@ const importBackup = async (
             <div style={{ background: "white", borderRadius: "24px", padding: "24px" }}>
               {/* Header */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "10px" }}>
-                <h2 style={{ margin: 0, fontSize: "22px" }}>ניהול מחסן</h2>
+                <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                  <h2 style={{ margin: 0, fontSize: "22px" }}>ניהול מחסן</h2>
+                  <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", borderRadius: "10px", padding: "4px" }}>
+                    {(["items", "suppliers"] as const).map(v => (
+                      <button key={v} onClick={() => setWarehouseView(v)}
+                        style={{ padding: "6px 14px", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", background: warehouseView === v ? "white" : "transparent", color: warehouseView === v ? "#1e40af" : "#6b7280", boxShadow: warehouseView === v ? "0 1px 3px rgba(0,0,0,0.1)" : "none" }}>
+                        {v === "items" ? "מוצרים" : "ספקים"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
                   <select value={warehouseYear} onChange={e => setWarehouseYear(Number(e.target.value))}
                     style={{ padding: "8px 12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "14px" }}>
@@ -4179,14 +4391,6 @@ const importBackup = async (
                     style={{ padding: "8px 14px", background: "#16a34a", color: "white", border: "none", borderRadius: "10px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
                     ↓ ייצא לאקסל
                   </button>
-                  <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", borderRadius: "10px", padding: "4px" }}>
-                    {(["items", "suppliers"] as const).map(v => (
-                      <button key={v} onClick={() => setWarehouseView(v)}
-                        style={{ padding: "6px 14px", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", background: warehouseView === v ? "white" : "transparent", color: warehouseView === v ? "#1e40af" : "#6b7280", boxShadow: warehouseView === v ? "0 1px 3px rgba(0,0,0,0.1)" : "none" }}>
-                        {v === "items" ? "מוצרים" : "ספקים"}
-                      </button>
-                    ))}
-                  </div>
                   {!warehouseFormVisible && warehouseView === "items" && (
                     <button onClick={() => setWarehouseFormVisible(true)}
                       style={{ padding: "8px 14px", background: "#1e40af", color: "white", border: "none", borderRadius: "10px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
@@ -4255,15 +4459,18 @@ const importBackup = async (
                     {supplierRows.length === 0 && (
                       <div style={{ textAlign: "center", color: "#9ca3af", padding: "40px" }}>אין מוצרים עם ספק מוגדר לשנה {warehouseYear}</div>
                     )}
-                    {supplierRows.map(s => (
+                    {supplierRows.map(s => {
+                      const isCollapsed = collapsedSuppliers.has(s.supplier);
+                      return (
                       <div key={s.supplier} style={{ marginBottom: "28px" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#1e40af", color: "white", borderRadius: "10px 10px 0 0", padding: "10px 16px" }}>
-                          <span style={{ fontWeight: 800, fontSize: "15px" }}>ספק: {s.supplier}</span>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#1e40af", color: "white", borderRadius: isCollapsed ? "10px" : "10px 10px 0 0", padding: "10px 16px", cursor: "pointer" }}
+                          onClick={() => setCollapsedSuppliers(prev => { const next = new Set(prev); if (next.has(s.supplier)) next.delete(s.supplier); else next.add(s.supplier); return next; })}>
+                          <span style={{ fontWeight: 800, fontSize: "15px" }}>{isCollapsed ? "▶" : "▼"} ספק: {s.supplier}</span>
                           <span style={{ fontSize: "13px", opacity: 0.9 }}>
                             עלות: ₪{s.totalCost.toFixed(2)} | מכירות: ₪{s.totalSoldAmount.toFixed(2)} | רווח: ₪{s.totalProfit.toFixed(2)}
                           </span>
                         </div>
-                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                        {!isCollapsed && <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
                           <thead>
                             <tr style={{ background: "#f1f5f9" }}>
                               <th style={{ ...thSt, position: "static" }}>מוצר</th>
@@ -4299,9 +4506,10 @@ const importBackup = async (
                               <td style={{ ...tdSt, textAlign: "center", color: s.totalProfit >= 0 ? "#7c3aed" : "#dc2626" }}>₪{s.totalProfit.toFixed(2)}</td>
                             </tr>
                           </tfoot>
-                        </table>
+                        </table>}
                       </div>
-                    ))}
+                    );
+                    })}
                   </div>
                 );
               })()}
@@ -4880,6 +5088,84 @@ const importBackup = async (
           </div>
         </div>
       )}
+      {/* ═══ מודל תשלום צף ═══ */}
+      {showPaymentModal && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.55)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9000 }}
+          onClick={() => setShowPaymentModal(false)}>
+          <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "460px", maxWidth: "95%", boxShadow: "0 16px 40px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: "16px" }}
+            onClick={e => e.stopPropagation()}>
+            {/* כותרת */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ margin: 0, fontSize: "20px" }}>תשלום</h2>
+              <button onClick={() => setShowPaymentModal(false)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#6b7280" }}>✕</button>
+            </div>
+            {selectedCustomer && <div style={{ fontSize: "15px", color: "#374151", fontWeight: 600 }}>לקוח: {selectedCustomer.name}</div>}
+            {/* סכום */}
+            <div style={{ background: "#f0fdf4", borderRadius: "12px", padding: "16px", textAlign: "center" }}>
+              {giftFreeQty > 0 && <div style={{ fontSize: "13px", color: "#7c3aed", marginBottom: "4px" }}>🎁 {giftBagProduct?.name} ×{giftFreeQty} מתנה</div>}
+              {discountAmount > 0 && <div style={{ fontSize: "13px", color: "#16a34a", marginBottom: "4px" }}>הנחה: −₪{discountAmount.toFixed(2)}</div>}
+              {paymentMethod === "cash" && roundingDiff !== 0 && <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "4px" }}>עיגול: {roundingDiff > 0 ? "+" : ""}₪{roundingDiff.toFixed(2)}</div>}
+              <div style={{ fontSize: "32px", fontWeight: 800, color: "#1e3a8a" }}>₪{effectiveFinalTotal.toFixed(2)}</div>
+              <div style={{ fontSize: "14px", color: "#6b7280" }}>לתשלום</div>
+            </div>
+            {/* שיטת תשלום */}
+            <div style={{ display: "flex", gap: "8px" }}>
+              {(["cash","check","credit"] as const).map(m => (
+                <button key={m} onClick={() => { setPaymentMethod(m); setShowCreditModal(false); }}
+                  style={{ flex: 1, padding: "10px", fontSize: "14px", fontWeight: 700, border: "2px solid", borderColor: paymentMethod === m ? "#2563eb" : "#e2e8f0", borderRadius: "12px", background: paymentMethod === m ? "#eff6ff" : "#f8fafc", color: paymentMethod === m ? "#2563eb" : "#6b7280", cursor: "pointer" }}>
+                  {m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : "אשראי"}
+                </button>
+              ))}
+            </div>
+            {/* מזומן */}
+            {paymentMethod === "cash" && (
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <input type="number" placeholder="סכום שהתקבל" value={cashReceived} onChange={e => setCashReceived(e.target.value)}
+                  style={{ flex: 1, padding: "12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "15px" }} />
+                <span style={{ fontWeight: 700, fontSize: "15px", color: "#16a34a", whiteSpace: "nowrap" }}>
+                  עודף: ₪{Math.max(0, Number(cashReceived || 0) - effectiveFinalTotal).toFixed(2)}
+                </span>
+              </div>
+            )}
+            {/* צ'ק / אשראי — תשלומים */}
+            {(paymentMethod === "check" || paymentMethod === "credit") && (
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "14px", fontWeight: 600 }}>מספר תשלומים:</span>
+                <select value={paymentMethod === "check" ? checkInstallments : creditInstallments}
+                  onChange={e => paymentMethod === "check" ? setCheckInstallments(Number(e.target.value)) : setCreditInstallments(Number(e.target.value))}
+                  style={{ padding: "8px 12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "14px" }}>
+                  <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
+                </select>
+              </div>
+            )}
+            {/* כפתורי פעולה */}
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={() => setShowPaymentModal(false)}
+                style={{ flex: 1, padding: "12px", background: "#f1f5f9", color: "#374151", border: "none", borderRadius: "12px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
+                חזרה לקופה
+              </button>
+              {paymentMethod === "credit" ? (
+                <button onClick={() => { setShowPaymentModal(false); setShowCreditModal(true); }}
+                  style={{ flex: 2, padding: "12px", background: "#10b981", color: "white", border: "none", borderRadius: "12px", fontSize: "14px", fontWeight: 700, cursor: "pointer" }}>
+                  שלם באשראי
+                </button>
+              ) : (
+                <button onClick={() => {
+                  if (paymentMethod === "cash") {
+                    if (!cashReceived || cashReceived.trim() === "") { setEmailAlertMessage("יש להזין את הסכום שהתקבל"); return; }
+                    if (Number(cashReceived) < effectiveFinalTotal) { setEmailAlertMessage(`הסכום שהתקבל נמוך מהסכום לתשלום`); return; }
+                  }
+                  completeSale();
+                }}
+                  style={{ flex: 2, padding: "12px", background: "#2563eb", color: "white", border: "none", borderRadius: "12px", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}>
+                  ✓ אישור וסיום עסקה
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* מודאל החזרת מוצר */}
       {showReturnModal && (() => {
         const q = returnSearch.trim().toLowerCase();
