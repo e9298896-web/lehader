@@ -623,6 +623,7 @@ export default function App() {
   const [closingFilter, setClosingFilter] = useState<"all" | "uncounted" | "variance">("all");
   const [warehouseSearch, setWarehouseSearch] = useState("");
   const [warehouseSupplierFilter, setWarehouseSupplierFilter] = useState("");
+  const [warehouseStatusFilter, setWarehouseStatusFilter] = useState("");
 
   // ── מצב ניווט חדש ──
   const [cashierMode, setCashierMode] = useState(false);
@@ -4554,35 +4555,21 @@ const importBackup = async (
           return (
             <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, gap: "16px" }}>
 
-              {/* ── HEADER: title + segmented control + description ── */}
-              <div style={{ background: "white", borderRadius: "16px", padding: "16px 20px", flexShrink: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap", marginBottom: "12px" }}>
-                  <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 800, color: "#111827" }}>מלאי ומחסן</h2>
-                  {/* Segmented control */}
-                  <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", borderRadius: "10px", padding: "4px" }}>
-                    <button onClick={() => setInventoryAdminTab("inventory")} className="cc-tab" style={tabBtn(true)}>
-                      מלאי יום מכירה
-                    </button>
-                    <button onClick={() => setInventoryAdminTab("warehouse")} className="cc-tab" style={tabBtn(false)}>
-                      מחסן מרכזי
-                    </button>
-                  </div>
+              {/* ── HEADER: compact single row ── */}
+              <div style={{ background: "white", borderRadius: "14px", padding: "10px 16px", flexShrink: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.08)", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 800, color: "#111827", whiteSpace: "nowrap" as const }}>מלאי ומחסן</h2>
+                <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", borderRadius: "10px", padding: "3px" }}>
+                  <button onClick={() => setInventoryAdminTab("inventory")} className="cc-tab" style={tabBtn(true)}>מלאי יום מכירה</button>
+                  <button onClick={() => setInventoryAdminTab("warehouse")} className="cc-tab" style={tabBtn(false)}>מחסן מרכזי</button>
                 </div>
-                <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>
-                  תכנון, אריזה, מעקב וספירה לכל מכירה.
-                </p>
-                {/* Day info bar */}
                 {selectedDay && (
-                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
-                    <span style={{ background: "#eff6ff", color: "#1d4ed8", borderRadius: "8px", padding: "4px 10px", fontSize: "12px", fontWeight: 700 }}>{selectedDay.name}</span>
-                    <span style={{ background: "#f1f5f9", color: "#374151", borderRadius: "8px", padding: "4px 10px", fontSize: "12px" }}>{formatDateIL(selectedDay.date)}</span>
-                    <span style={{ background: "#f1f5f9", color: "#374151", borderRadius: "8px", padding: "4px 10px", fontSize: "12px" }}>
-                      {selectedDay.type === "walkin" ? "לקוחות עם הנחה" : selectedDay.type === "walkin-nodiscount" ? "ללא הנחה" : selectedDay.type === "preorder" ? "הזמנות" : "פתוח"}
-                    </span>
-                    <span style={{ background: selectedDay.isActive ? "#dcfce7" : "#f1f5f9", color: selectedDay.isActive ? "#16a34a" : "#6b7280", borderRadius: "8px", padding: "4px 10px", fontSize: "12px", fontWeight: 700 }}>
+                  <>
+                    <span style={{ background: "#eff6ff", color: "#1d4ed8", borderRadius: "8px", padding: "3px 9px", fontSize: "12px", fontWeight: 700 }}>{selectedDay.name}</span>
+                    <span style={{ background: "#f1f5f9", color: "#374151", borderRadius: "8px", padding: "3px 9px", fontSize: "12px" }}>{formatDateIL(selectedDay.date)}</span>
+                    <span style={{ background: selectedDay.isActive ? "#dcfce7" : "#f1f5f9", color: selectedDay.isActive ? "#16a34a" : "#6b7280", borderRadius: "8px", padding: "3px 9px", fontSize: "12px", fontWeight: 700 }}>
                       {selectedDay.isActive ? "● פעיל" : "לא פעיל"}
                     </span>
-                  </div>
+                  </>
                 )}
               </div>
 
@@ -4590,7 +4577,7 @@ const importBackup = async (
               <div style={{ background: "white", borderRadius: "20px", flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
                 {/* Stepper */}
-                <div style={{ padding: "16px 20px", borderBottom: "1px solid #e2e8f0", flexShrink: 0 }}>
+                <div style={{ padding: "10px 16px", borderBottom: "1px solid #e2e8f0", flexShrink: 0 }}>
                   <div style={{ display: "flex", gap: "0", alignItems: "center" }}>
                     {stepDefs.map((s, i) => {
                       const curIdx = stepDefs.findIndex(x => x.key === inventoryStep);
@@ -5164,23 +5151,13 @@ const importBackup = async (
           return (
             <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, gap: "16px" }}>
 
-              {/* ── HEADER ── */}
-              <div style={{ background: "white", borderRadius: "16px", padding: "16px 20px", flexShrink: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap", marginBottom: "12px" }}>
-                  <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 800, color: "#111827" }}>מלאי ומחסן</h2>
-                  {/* Segmented control */}
-                  <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", borderRadius: "10px", padding: "4px" }}>
-                    <button onClick={() => setInventoryAdminTab("inventory")} className="cc-tab" style={tabBtn(false)}>
-                      מלאי יום מכירה
-                    </button>
-                    <button onClick={() => setInventoryAdminTab("warehouse")} className="cc-tab" style={tabBtn(true)}>
-                      מחסן מרכזי
-                    </button>
-                  </div>
+              {/* ── HEADER: compact single row ── */}
+              <div style={{ background: "white", borderRadius: "14px", padding: "10px 16px", flexShrink: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.08)", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 800, color: "#111827", whiteSpace: "nowrap" as const }}>מלאי ומחסן</h2>
+                <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", borderRadius: "10px", padding: "3px" }}>
+                  <button onClick={() => setInventoryAdminTab("inventory")} className="cc-tab" style={tabBtn(false)}>מלאי יום מכירה</button>
+                  <button onClick={() => setInventoryAdminTab("warehouse")} className="cc-tab" style={tabBtn(true)}>מחסן מרכזי</button>
                 </div>
-                <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>
-                  רכש, ספקים והיתרות הכוללות.
-                </p>
               </div>
 
               {/* ── WAREHOUSE PANEL ── */}
