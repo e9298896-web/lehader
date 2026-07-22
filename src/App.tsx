@@ -445,7 +445,7 @@ export default function App() {
   // ── Internal tab states ──
   const [reportTab, setReportTab] = useState<"sales" | "breakdown" | "inventory">("sales");
   const [breakdownTab, setBreakdownTab] = useState<"category" | "customer" | "seller">("category");
-  const [settingsTab, setSettingsTab] = useState<"sellers" | "backup" | "maintenance" | "log">("sellers");
+  const [settingsTab, setSettingsTab] = useState<"sellers" | "backup" | "integrity" | "log">("sellers");
 
   // ── Home screen filters ──
   const [homeSearch, setHomeSearch] = useState("");
@@ -453,8 +453,13 @@ export default function App() {
 
   // ── Settings extras ──
   const [showAddSellerModal, setShowAddSellerModal] = useState(false);
+  const [editingSeller, setEditingSeller] = useState<string | null>(null);
+  const [editSellerName, setEditSellerName] = useState("");
   const [logSearch, setLogSearch] = useState("");
   const [logSellerFilter, setLogSellerFilter] = useState("");
+  const [logDateFilter, setLogDateFilter] = useState("");
+  const [logActionFilter, setLogActionFilter] = useState("");
+  const [settingsLogActionsOpen, setSettingsLogActionsOpen] = useState(false);
 
   const [editingProductId, setEditingProductId] =
     useState<number | null>(null);
@@ -981,6 +986,18 @@ export default function App() {
       setSaleDayDetailId(activeSaleDay?.id ?? saleDays[0].id);
     }
   }, [adminTab, saleDays.length]);
+
+  // סגור תפריטים בלחיצת Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setShowMoreActions(false);
+        setSettingsLogActionsOpen(false);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
 
   useEffect(() => {
     if (!showCreditModal) return;
@@ -2605,21 +2622,33 @@ const importBackup = async (
       >
         {/* ── ניווט קופה (מצב מוכר) ── */}
         {cashierMode && (
-          <div style={{ background: "#083f1e", display: "flex", alignItems: "center", padding: "0 16px", height: "52px", gap: "12px", boxShadow: "0 2px 6px rgba(0,0,0,0.15)", position: "sticky", top: 0, zIndex: 1000 }}>
-            <span style={{ fontWeight: 800, fontSize: "16px", color: "white" }}>{activeSaleDay?.name ?? "קופה"}</span>
+          <div style={{ background: "#083f1e", display: "flex", alignItems: "center", padding: "0 16px", height: "52px", gap: "10px", boxShadow: "0 2px 6px rgba(0,0,0,0.15)", position: "sticky", top: 0, zIndex: 1000, flexShrink: 0 }}>
+            <span style={{ fontWeight: 800, fontSize: "16px", color: "white", whiteSpace: "nowrap" as const }}>{activeSaleDay?.name ?? "קופה"}</span>
             {activeSaleDay && (
-              <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: "8px", padding: "2px 10px", fontSize: "12px", fontWeight: 700 }}>
-                {activeSaleDay.type === "walkin" ? "עם הנחה" : activeSaleDay.type === "walkin-nodiscount" ? "ללא הנחה" : activeSaleDay.type === "preorder" ? `הזמנות | ממתינות: ${activeSaleDay.preOrders.filter(o => o.status === "pending").length}` : "פתוח"}
-              </span>
+              <>
+                <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: "8px", padding: "2px 10px", fontSize: "12px", fontWeight: 700, whiteSpace: "nowrap" as const }}>
+                  {activeSaleDay.type === "walkin" ? "עם הנחה" : activeSaleDay.type === "walkin-nodiscount" ? "ללא הנחה" : activeSaleDay.type === "preorder" ? "הזמנות מראש" : "פתוח"}
+                </span>
+                {activeSaleDay.type === "preorder" && activeSaleDay.preOrders.filter(o => o.status === "pending").length > 0 && (
+                  <span style={{ background: "#fca5a5", color: "#7f1d1d", borderRadius: "8px", padding: "2px 10px", fontSize: "12px", fontWeight: 700, whiteSpace: "nowrap" as const }}>
+                    {activeSaleDay.preOrders.filter(o => o.status === "pending").length} ממתינות
+                  </span>
+                )}
+                {pendingSales.filter(s => s.saleDayId === activeSaleDay.id).length > 0 && (
+                  <span style={{ background: "rgba(255,255,255,0.18)", color: "white", borderRadius: "8px", padding: "2px 10px", fontSize: "12px", fontWeight: 700, whiteSpace: "nowrap" as const }}>
+                    ⏸ {pendingSales.filter(s => s.saleDayId === activeSaleDay.id).length} בהמתנה
+                  </span>
+                )}
+              </>
             )}
-            <label style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", marginRight: "auto", display: "flex", alignItems: "center", gap: "6px" }}>
+            <label style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", marginRight: "auto", display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" as const }}>
               מוכר:&nbsp;
               <select value={currentSeller} onChange={e => setCurrentSeller(e.target.value)} style={{ padding: "4px 8px", borderRadius: "8px", fontSize: "13px", border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.15)", color: "white" }}>
                 {sellers.map(s => <option key={s.name} value={s.name} style={{ background: "#083f1e" }}>{s.name}</option>)}
               </select>
             </label>
             <button onClick={() => setCashierMode(false)} className="cc-btn" style={navActionBtn()}>
-              ← יציאה מהקופה
+              ← יציאה
             </button>
             <button onClick={toggleFullscreen} title={isFullscreen ? "צא ממסך מלא" : "מסך מלא"} className="cc-btn" style={navIconBtn()}>
               {isFullscreen ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/></svg> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>}
@@ -2665,10 +2694,10 @@ const importBackup = async (
             </div>
           )}
           {cashierMode && activeSaleDay && (
-          <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px", alignItems: "start", padding: "20px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px", alignItems: "stretch", padding: "16px", height: "calc(100dvh - 52px)", boxSizing: "border-box" }}>
 
             {/* ── פאנל שמאל: מוצרים ולקוח ── */}
-            <div style={{ background: "white", borderRadius: "20px", padding: "20px", display: "flex", flexDirection: "column", gap: "0", height: "calc(100vh - 92px)", overflow: "hidden", position: "sticky", top: "52px" }}>
+            <div style={{ background: "white", borderRadius: "20px", padding: "20px", display: "flex", flexDirection: "column", gap: "0", minHeight: 0, overflow: "hidden" }}>
               <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "14px", paddingBottom: "10px" }}>
 
               {/* חיפוש לקוח */}
@@ -2679,6 +2708,7 @@ const importBackup = async (
                   value={customerSearch}
                   onChange={e => setCustomerSearch(e.target.value)}
                   style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                  autoFocus
                 />
                 {(customerResults.length > 0 || preOrderSearchResults.length > 0) && (
                   <div style={{ position: "absolute", top: "100%", right: 0, left: 0, background: "white", border: "1px solid #e2e8f0", borderRadius: "12px", zIndex: 100, maxHeight: "240px", overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.12)" }}>
@@ -2717,6 +2747,7 @@ const importBackup = async (
                     {selectedCustomer.name}
                   </span>
                   {discountPercent > 0 && <span style={{ background: "#2563eb", color: "white", borderRadius: "8px", padding: "2px 8px", fontSize: "13px" }}>הנחה {discountPercent}%</span>}
+                  <button onClick={() => setSelectedCustomer(null)} className="cc-btn" style={btn("dangerGhost", "sm")} title="נקה לקוח">✕</button>
                 </div>
               )}
 
@@ -2770,54 +2801,65 @@ const importBackup = async (
               {/* כפתורי פעולה */}
               <div style={{ borderTop: "2px solid #e2e8f0", paddingTop: "12px", flexShrink: 0 }}>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <button onClick={savePendingSale} className="cc-btn" style={{ ...btn("warning", "lg"), flex: 1 }}>
-                    ⏸ שמירה
-                  </button>
-                  <div style={{ position: "relative", flex: 1 }}>
-                    <button onClick={() => setShowMoreActions(v => !v)} className="cc-btn" style={{ ...menuTriggerBtn(), width: "100%" }}>
-                      ↩ פעולות נוספות
-                    </button>
-                    {showMoreActions && (
-                      <div style={{ position: "absolute", bottom: "110%", right: 0, background: "white", border: "1px solid #e2e8f0", borderRadius: "12px", boxShadow: "0 4px 16px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "180px", overflow: "hidden" }}>
-                        <button onClick={() => { setShowReturnModal(true); setReturnSearch(""); setReturnSourceId(null); setReturnQtys({}); setShowMoreActions(false); }}
-                          className="cc-menu-item" style={menuItemBtn("purple")}>
-                          ↩ החזרת מוצר
-                        </button>
-                        <button onClick={() => {
-                          if (activeSaleDay) {
-                            const inv = getInventoryForDay(activeSaleDay);
-                            const initial: Record<number, number> = {};
-                            inv.forEach(i => { initial[i.productId] = i.actualEndQty ?? 0; });
-                            setCloseDayActuals(initial);
-                          }
-                          setShowCloseDayModal(true);
-                          setShowMoreActions(false);
-                        }}
-                          className="cc-menu-item danger" style={{ ...menuItemBtn("danger"), borderTop: "1px solid #f1f5f9" }}>
-                          🔒 סגירת יום מכירה
-                        </button>
-                      </div>
-                    )}
-                  </div>
                   <button onClick={() => { if (cart.length > 0) { setShowPaymentModal(true); setPaymentModalError(""); } }} disabled={cart.length === 0}
                     className="cc-btn" style={{ ...btn("primary", "lg"), flex: 2, padding: "13px" }}>
                     💳 מעבר לתשלום
                   </button>
+                  <button onClick={savePendingSale} className="cc-btn" style={{ ...btn("warning", "lg"), flex: 1 }}>
+                    ⏸ שמור בהמתנה
+                  </button>
+                  <div style={{ position: "relative" }}>
+                    <button onClick={() => setShowMoreActions(v => !v)} className="cc-btn" style={{ ...menuTriggerBtn(), height: "100%", padding: "0 14px" }}>
+                      ⋯
+                    </button>
+                    {showMoreActions && (
+                      <>
+                        {/* overlay לסגירה בקליק מחוץ */}
+                        <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={() => setShowMoreActions(false)} />
+                        <div style={{ position: "absolute", bottom: "110%", left: 0, background: "white", border: "1px solid #e2e8f0", borderRadius: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "200px", overflow: "hidden" }}>
+                          <button onClick={() => { setShowReturnModal(true); setReturnSearch(""); setReturnSourceId(null); setReturnQtys({}); setShowMoreActions(false); }}
+                            className="cc-menu-item" style={menuItemBtn("purple")}>
+                            ↩ החזרת מוצר
+                          </button>
+                          <button onClick={() => {
+                            if (activeSaleDay) {
+                              const inv = getInventoryForDay(activeSaleDay);
+                              const initial: Record<number, number> = {};
+                              inv.forEach(i => { initial[i.productId] = i.actualEndQty ?? 0; });
+                              setCloseDayActuals(initial);
+                            }
+                            setShowCloseDayModal(true);
+                            setShowMoreActions(false);
+                          }}
+                            className="cc-menu-item danger" style={{ ...menuItemBtn("danger"), borderTop: "1px solid #f1f5f9" }}>
+                            סגירת יום מכירה
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
 
             {/* ── פאנל ימין: סל ── */}
-            <div style={{ background: "white", borderRadius: "20px", padding: "20px", display: "flex", flexDirection: "column", gap: "0", height: "calc(100vh - 92px)", overflow: "hidden", position: "sticky", top: "52px" }}>
+            <div style={{ background: "white", borderRadius: "20px", padding: "20px", display: "flex", flexDirection: "column", gap: "0", minHeight: 0, overflow: "hidden" }}>
 
               {/* כותרת סל */}
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
-                <h2 style={{ margin: 0, fontSize: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
-                  סל קניות
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px", flexShrink: 0 }}>
+                <h2 style={{ margin: 0, fontSize: "18px", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+                  סל
                 </h2>
-                {cart.length > 0 && <span style={{ background: "#2563eb", color: "white", borderRadius: "20px", padding: "2px 10px", fontSize: "13px", fontWeight: 700 }}>{cart.length}</span>}
-                <button onClick={clearCart} className="cc-btn" style={{ ...btn("dangerGhost", "sm"), marginRight: "auto" }}>
+                {cart.length > 0 && (
+                  <span style={{ background: "#eff6ff", color: "#1d4ed8", borderRadius: "20px", padding: "2px 10px", fontSize: "12px", fontWeight: 700 }}>
+                    {cart.length} מוצרים · {cart.reduce((s, i) => s + i.qty, 0)} יח׳
+                  </span>
+                )}
+                <button onClick={() => {
+                  if (cart.length === 0) return;
+                  showConfirm({ title: "ניקוי הסל", message: "לנקות את כל הסל?", confirmLabel: "נקה", confirmVariant: "danger", onConfirm: clearCart });
+                }} className="cc-btn" style={{ ...btn("dangerGhost", "sm"), marginRight: "auto" }} disabled={cart.length === 0}>
                   נקה סל
                 </button>
               </div>
@@ -2898,7 +2940,7 @@ const importBackup = async (
                           <span style={{ fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sale.customerName || "ללא שם"}</span>
                           <span style={{ color: "#6b7280", whiteSpace: "nowrap" }}>₪{sale.finalTotal}</span>
                           <button onClick={() => resumePendingSale(sale)} className="cc-btn" style={btn("primary", "sm")}>חזור</button>
-                          <button onClick={() => deletePendingSale(sale.id)} className="cc-btn" style={btn("danger", "sm")}>✕</button>
+                          <button onClick={() => showConfirm({ title: "מחיקת עסקה", message: `למחוק עסקה של ${sale.customerName || "ללא שם"}?`, confirmLabel: "מחק", confirmVariant: "danger", onConfirm: () => deletePendingSale(sale.id) })} className="cc-btn" style={btn("danger", "sm")}>✕</button>
                         </div>
                       ))}
                     </div>
@@ -3947,43 +3989,129 @@ const importBackup = async (
 
 
 
-        {!cashierMode && adminTab === "settings" && (
+        {!cashierMode && adminTab === "settings" && (() => {
+          const settingsTabDescriptions: Record<string, string> = {
+            sellers: "ניהול רשימת המוכרים ותפקידיהם.",
+            backup: "הורדת גיבוי של כל הנתונים ושחזור מקובץ גיבוי קיים.",
+            integrity: "בדיקת עסקאות ממתינות ללא שיוך ליום מכירה.",
+            log: "מעקב אחר פעולות שבוצעו במערכת.",
+          };
+          const orphans = pendingSales.filter(s => !s.saleDayId);
+          const logEntries = activityLog.filter(e => {
+            if (logSearch && !e.action.includes(logSearch) && !e.seller.includes(logSearch) && !e.date.includes(logSearch)) return false;
+            if (logSellerFilter && e.seller !== logSellerFilter) return false;
+            if (logDateFilter && !e.date.startsWith(logDateFilter)) return false;
+            return true;
+          });
+          const thLog: React.CSSProperties = { padding: "8px 12px", textAlign: "right" as const, background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky" as const, top: 0, zIndex: 1, fontWeight: 700, fontSize: "13px", color: "#374151", whiteSpace: "nowrap" as const };
+          return (
           <div style={{ background: "white", borderRadius: "20px", overflow: "hidden" }}>
-            {/* טאבים */}
-            <div style={{ display: "flex", borderBottom: "2px solid #f1f5f9", direction: "rtl" }}>
-              {([["sellers","מוכרים"],["backup","גיבוי ושחזור"],["maintenance","תחזוקת נתונים"],["log","יומן פעילות"]] as const).map(([key, label]) => (
-                <button key={key} onClick={() => setSettingsTab(key)} className="cc-underline-tab"
-                  style={underlineTabBtn(settingsTab === key)}>
-                  {label}{key === "maintenance" && pendingSales.filter(s => !s.saleDayId).length > 0 ? ` (${pendingSales.filter(s => !s.saleDayId).length})` : ""}
-                </button>
-              ))}
+            {/* כותרת + תיאור */}
+            <div style={{ padding: "16px 24px 0", direction: "rtl", borderBottom: "2px solid #f1f5f9" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap", marginBottom: "6px" }}>
+                <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 800, color: "#111827" }}>הגדרות</h2>
+                <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>{settingsTabDescriptions[settingsTab]}</p>
+              </div>
+              <div style={{ display: "flex", direction: "rtl" }}>
+                {([["sellers","מוכרים"],["backup","גיבוי ושחזור"],["integrity","תקינות נתונים"],["log","יומן פעילות"]] as const).map(([key, label]) => (
+                  <button key={key} onClick={() => setSettingsTab(key)} className="cc-underline-tab"
+                    style={underlineTabBtn(settingsTab === key)}>
+                    {label}{key === "integrity" && orphans.length > 0 ? ` (${orphans.length})` : ""}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div style={{ padding: "24px" }}>
+
               {/* ── מוכרים ── */}
               {settingsTab === "sellers" && (
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", direction: "rtl" }}>
-                    <h3 style={{ margin: 0, fontSize: "17px" }}>מוכרים ({sellers.length})</h3>
+                <div style={{ direction: "rtl", maxWidth: "640px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                    <span style={{ fontSize: "14px", color: "#6b7280" }}>{sellers.length} מוכרים רשומים</span>
                     <button onClick={() => setShowAddSellerModal(true)} className="cc-btn" style={btn("primary")}>+ הוסף מוכר</button>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    {sellers.map(seller => (
-                      <div key={seller.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#f8fafc", borderRadius: "10px", border: "1px solid #e2e8f0", direction: "rtl" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                          <span style={{ fontWeight: 600 }}>{seller.name}</span>
-                          {seller.isAdmin && <span style={{ background: "#dbeafe", color: "#1e40af", borderRadius: "6px", padding: "2px 8px", fontSize: "11px", fontWeight: 700 }}>מנהל</span>}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {sellers.map(seller => {
+                      const isCurrentSeller = seller.name === currentSeller;
+                      const isLastAdmin = seller.isAdmin && sellers.filter(s => s.isAdmin).length === 1;
+                      return (
+                        <div key={seller.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#f8fafc", borderRadius: "10px", border: "1px solid #e2e8f0" }}>
+                          {editingSeller === seller.name ? (
+                            <input
+                              value={editSellerName}
+                              onChange={e => setEditSellerName(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === "Enter") {
+                                  const trimmed = editSellerName.trim();
+                                  if (trimmed && trimmed !== seller.name && !sellers.find(s => s.name === trimmed)) {
+                                    setSellers(prev => prev.map(s => s.name === seller.name ? { ...s, name: trimmed } : s));
+                                    if (currentSeller === seller.name) setCurrentSeller(trimmed);
+                                  }
+                                  setEditingSeller(null);
+                                }
+                                if (e.key === "Escape") setEditingSeller(null);
+                              }}
+                              style={{ fontWeight: 600, fontSize: "14px", padding: "4px 8px", borderRadius: "6px", border: "1px solid #0891b2", outline: "none", flex: 1, maxWidth: "200px" }}
+                              autoFocus
+                            />
+                          ) : (
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                              <span style={{ fontWeight: 600, fontSize: "14px" }}>{seller.name}</span>
+                              {seller.isAdmin && <span style={{ background: "#dbeafe", color: "#1e40af", borderRadius: "6px", padding: "2px 8px", fontSize: "11px", fontWeight: 700 }}>מנהל</span>}
+                              {isCurrentSeller && <span style={{ background: "#dcfce7", color: "#16a34a", borderRadius: "6px", padding: "2px 8px", fontSize: "11px" }}>פעיל</span>}
+                            </div>
+                          )}
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                            {/* Switch מנהל */}
+                            <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: isLastAdmin ? "not-allowed" : "pointer", opacity: isLastAdmin ? 0.5 : 1 }} title={isLastAdmin ? "אי אפשר להסיר את המנהל האחרון" : ""}>
+                              <span style={{ fontSize: "12px", color: "#6b7280" }}>מנהל</span>
+                              <div style={{ position: "relative", width: "36px", height: "20px" }}>
+                                <input type="checkbox" checked={seller.isAdmin}
+                                  disabled={isLastAdmin}
+                                  onChange={e => setSellers(prev => prev.map(s => s.name === seller.name ? { ...s, isAdmin: e.target.checked } : s))}
+                                  style={{ opacity: 0, width: 0, height: 0, position: "absolute" }} />
+                                <div onClick={() => { if (!isLastAdmin) setSellers(prev => prev.map(s => s.name === seller.name ? { ...s, isAdmin: !s.isAdmin } : s)); }}
+                                  style={{ position: "absolute", inset: 0, borderRadius: "10px", background: seller.isAdmin ? "#2563eb" : "#cbd5e1", transition: "background 0.2s", cursor: isLastAdmin ? "not-allowed" : "pointer" }}>
+                                  <div style={{ position: "absolute", top: "2px", left: seller.isAdmin ? "18px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "white", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+                                </div>
+                              </div>
+                            </label>
+                            {editingSeller === seller.name ? (
+                              <>
+                                <button onClick={() => {
+                                  const trimmed = editSellerName.trim();
+                                  if (trimmed && trimmed !== seller.name && !sellers.find(s => s.name === trimmed)) {
+                                    setSellers(prev => prev.map(s => s.name === seller.name ? { ...s, name: trimmed } : s));
+                                    if (currentSeller === seller.name) setCurrentSeller(trimmed);
+                                  }
+                                  setEditingSeller(null);
+                                }} className="cc-btn" style={btn("primary", "sm")}>שמור</button>
+                                <button onClick={() => setEditingSeller(null)} className="cc-btn" style={btn("secondary", "sm")}>ביטול</button>
+                              </>
+                            ) : (
+                              <>
+                                <button onClick={() => { setEditingSeller(seller.name); setEditSellerName(seller.name); }}
+                                  className="cc-btn" style={btn("secondary", "sm")}>ערוך</button>
+                                <button
+                                  disabled={isCurrentSeller}
+                                  title={isCurrentSeller ? "לא ניתן למחוק מוכר פעיל" : ""}
+                                  onClick={() => showConfirm({
+                                    title: "מחיקת מוכר",
+                                    message: "למחוק מוכר זה? לא ניתן לשחזר.",
+                                    itemName: seller.name,
+                                    confirmLabel: "מחק",
+                                    confirmVariant: "danger",
+                                    onConfirm: () => setSellers(prev => prev.filter(s => s.name !== seller.name)),
+                                  })}
+                                  className="cc-btn" style={{ ...btn("danger", "sm"), opacity: isCurrentSeller ? 0.4 : 1 }}>מחק</button>
+                              </>
+                            )}
+                          </div>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                          <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "#6b7280", cursor: "pointer" }}>
-                            <input type="checkbox" checked={seller.isAdmin} onChange={e => setSellers(prev => prev.map(s => s.name === seller.name ? { ...s, isAdmin: e.target.checked } : s))} />
-                            מנהל
-                          </label>
-                          <button onClick={() => showConfirm({ title: "מחיקת מוכר", message: "למחוק מוכר זה?", itemName: seller.name, confirmLabel: "מחק", confirmVariant: "danger", onConfirm: () => setSellers(prev => prev.filter(s => s.name !== seller.name)) })} className="cc-btn" style={btn("danger", "sm")}>מחק</button>
-                        </div>
-                      </div>
-                    ))}
-                    {sellers.length === 0 && <div style={{ color: "#9ca3af", fontSize: "14px", padding: "16px" }}>אין מוכרים רשומים</div>}
+                      );
+                    })}
+                    {sellers.length === 0 && <div style={{ color: "#9ca3af", fontSize: "14px", padding: "16px", textAlign: "center" }}>אין מוכרים רשומים</div>}
                   </div>
                 </div>
               )}
@@ -3991,17 +4119,18 @@ const importBackup = async (
               {/* ── גיבוי ושחזור ── */}
               {settingsTab === "backup" && (
                 <div style={{ direction: "rtl" }}>
-                  <h3 style={{ margin: "0 0 20px", fontSize: "17px" }}>גיבוי ושחזור</h3>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                    <div style={{ background: "#f8fafc", borderRadius: "12px", padding: "20px", border: "1px solid #e2e8f0" }}>
-                      <h4 style={{ margin: "0 0 8px", fontSize: "15px", color: "#374151" }}>הורדת גיבוי מלא</h4>
-                      <p style={{ margin: "0 0 14px", fontSize: "13px", color: "#6b7280" }}>מוריד קובץ JSON עם כל הנתונים: מכירות, לקוחות, עסקאות, מחסן ועוד.</p>
-                      <button onClick={exportBackup} className="cc-btn" style={btn("primary")}>הורד גיבוי</button>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "16px" }}>
+                    {/* כרטיס גיבוי */}
+                    <div style={{ background: "#f8fafc", borderRadius: "14px", padding: "20px", border: "1px solid #e2e8f0" }}>
+                      <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: "#111827" }}>הורדת גיבוי</h4>
+                      <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280", lineHeight: 1.5 }}>מוריד קובץ JSON המכיל את כל הנתונים: ימי מכירה, לקוחות, עסקאות, מחסן, מוכרים ועוד.</p>
+                      <button onClick={() => { exportBackup(); addToast("הגיבוי הורד בהצלחה", "success"); }} className="cc-btn" style={btn("primary")}>↓ הורד גיבוי מלא</button>
                     </div>
-                    <div style={{ background: "#fef9c3", borderRadius: "12px", padding: "20px", border: "1px solid #fde68a" }}>
-                      <h4 style={{ margin: "0 0 8px", fontSize: "15px", color: "#92400e" }}>שחזור מגיבוי</h4>
-                      <p style={{ margin: "0 0 14px", fontSize: "13px", color: "#78350f" }}>שחזור גיבוי ידרוס את כל הנתונים הקיימים. בצע פעולה זו בזהירות.</p>
-                      <label style={{ ...btn("warning"), display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                    {/* כרטיס שחזור */}
+                    <div style={{ background: "#fffbeb", borderRadius: "14px", padding: "20px", border: "1px solid #fde68a" }}>
+                      <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: "#92400e" }}>שחזור מגיבוי</h4>
+                      <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#78350f", lineHeight: 1.5 }}>מחליף את כל הנתונים הקיימים בנתוני הגיבוי. יש לאשר לפני הביצוע.</p>
+                      <label className="cc-btn" style={{ ...btn("warning"), display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
                         בחר קובץ גיבוי
                         <input type="file" accept=".json" onChange={importBackup} style={{ display: "none" }} />
                       </label>
@@ -4010,23 +4139,27 @@ const importBackup = async (
                 </div>
               )}
 
-              {/* ── תחזוקת נתונים ── */}
-              {settingsTab === "maintenance" && (() => {
-                const orphans = pendingSales.filter(s => !s.saleDayId);
-                return (
-                  <div style={{ direction: "rtl" }}>
-                    <h3 style={{ margin: "0 0 16px", fontSize: "17px" }}>תחזוקת נתונים</h3>
-                    {orphans.length === 0 ? (
-                      <div style={{ background: "#f0fdf4", borderRadius: "12px", padding: "20px", border: "1px solid #86efac", color: "#15803d", fontWeight: 600 }}>כל הנתונים תקינים — אין עסקאות ממתינות ללא שיוך</div>
-                    ) : (
-                      <div>
-                        <div style={{ background: "#fef3c7", borderRadius: "10px", padding: "12px 16px", marginBottom: "16px", color: "#92400e", fontSize: "14px", fontWeight: 600 }}>
-                          {orphans.length} עסקאות המתנה ללא שיוך ליום מכירה — בחר יום עבור כל אחת ולחץ שמור.
-                        </div>
+              {/* ── תקינות נתונים ── */}
+              {settingsTab === "integrity" && (
+                <div style={{ direction: "rtl" }}>
+                  {orphans.length === 0 ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "#f8fafc", borderRadius: "12px", padding: "14px 18px", border: "1px solid #e2e8f0", color: "#374151", fontSize: "14px" }}>
+                      <span style={{ color: "#16a34a", fontSize: "18px" }}>✓</span>
+                      לא נמצאו עסקאות ממתינות ללא שיוך ליום מכירה.
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fef3c7", borderRadius: "10px", padding: "12px 16px", marginBottom: "16px", color: "#92400e", fontSize: "14px", fontWeight: 600 }}>
+                        <span>⚠</span>
+                        {orphans.length} עסקאות המתנה ללא שיוך ליום מכירה — בחר יום עבור כל אחת ולחץ שמור.
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                         {orphans.map(s => (
-                          <div key={s.id} style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "10px", padding: "10px 14px", background: "#fef9c3", border: "1px solid #fde68a", borderRadius: "10px", flexWrap: "wrap" }}>
+                          <div key={s.id} style={{ display: "flex", gap: "10px", alignItems: "center", padding: "12px 16px", background: "#fefce8", border: "1px solid #fde68a", borderRadius: "10px", flexWrap: "wrap" }}>
                             <div style={{ flex: 1, fontSize: "13px", minWidth: "160px" }}>
-                              <strong>{s.customerName}</strong> — {s.date} — ₪{s.finalTotal.toFixed(2)}
+                              <strong>{s.customerName || "ללא שם"}</strong>
+                              <span style={{ color: "#6b7280", marginRight: "8px" }}>{s.date}</span>
+                              <span style={{ color: "#374151", fontWeight: 700 }}> {formatCurrency(s.finalTotal)}</span>
                               <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>{s.items.map(i => `${i.name} ×${i.qty}`).join(", ")}</div>
                             </div>
                             <select value={orphanPendingDayIds[s.id] ?? ""} onChange={e => setOrphanPendingDayIds(prev => ({ ...prev, [s.id]: Number(e.target.value) }))}
@@ -4039,67 +4172,87 @@ const importBackup = async (
                               if (!dayId) return;
                               setPendingSales(prev => prev.map(p => p.id === s.id ? { ...p, saleDayId: dayId } : p));
                               setOrphanPendingDayIds(prev => { const next = { ...prev }; delete next[s.id]; return next; });
+                              addToast("העסקה שויכה ליום המכירה", "success");
                             }} className="cc-btn" style={btn("primary", "sm")}>שמור</button>
                           </div>
                         ))}
                       </div>
-                    )}
-                  </div>
-                );
-              })()}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* ── יומן פעילות ── */}
               {settingsTab === "log" && (
                 <div style={{ direction: "rtl" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "8px" }}>
-                    <h3 style={{ margin: 0, fontSize: "17px" }}>יומן פעילות ({activityLog.length})</h3>
-                    <div style={{ display: "flex", gap: "8px" }}>
-                      <input placeholder="חיפוש..." value={logSearch} onChange={e => setLogSearch(e.target.value)}
-                        style={{ padding: "6px 10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "13px", direction: "rtl" }} />
-                      <select value={logSellerFilter} onChange={e => setLogSellerFilter(e.target.value)}
-                        style={{ padding: "6px 10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "13px", direction: "rtl" }}>
-                        <option value="">כל המוכרים</option>
-                        {sellers.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-                      </select>
-                      {activityLog.length > 0 && (
-                        <button onClick={() => showConfirm({ title: "ניקוי יומן פעילות", message: "למחוק את כל יומן הפעילות?", confirmLabel: "נקה", confirmVariant: "danger", onConfirm: () => setActivityLog([]) })}
-                          className="cc-btn" style={btn("danger", "sm")}>נקה יומן</button>
+                  {/* Toolbar */}
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px", flexWrap: "wrap" }}>
+                    <input placeholder="חיפוש..." value={logSearch} onChange={e => setLogSearch(e.target.value)}
+                      style={{ padding: "7px 11px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "13px", flex: "1 1 140px" }} />
+                    <select value={logSellerFilter} onChange={e => setLogSellerFilter(e.target.value)}
+                      style={{ padding: "7px 10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "13px" }}>
+                      <option value="">כל המוכרים</option>
+                      {sellers.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                    </select>
+                    <input type="date" value={logDateFilter} onChange={e => setLogDateFilter(e.target.value)}
+                      style={{ padding: "7px 10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "13px" }} />
+                    <span style={{ fontSize: "12px", color: "#9ca3af", whiteSpace: "nowrap" as const }}>{logEntries.length} רשומות</span>
+                    {/* Actions dropdown */}
+                    <div style={{ position: "relative" }}>
+                      <button onClick={() => setSettingsLogActionsOpen(v => !v)} className="cc-btn" style={btn("secondary", "sm")}>
+                        פעולות ▾
+                      </button>
+                      {settingsLogActionsOpen && (
+                        <div style={{ position: "absolute", top: "110%", left: 0, background: "white", border: "1px solid #e2e8f0", borderRadius: "10px", boxShadow: "0 4px 16px rgba(0,0,0,0.12)", zIndex: 300, minWidth: "160px", overflow: "hidden" }}
+                          onClick={() => setSettingsLogActionsOpen(false)}>
+                          <button
+                            disabled={activityLog.length === 0}
+                            onClick={() => showConfirm({
+                              title: "ניקוי יומן פעילות",
+                              message: `למחוק ${activityLog.length} רשומות מהיומן?`,
+                              confirmLabel: "נקה הכול",
+                              confirmVariant: "danger",
+                              onConfirm: () => { setActivityLog([]); addToast("יומן הפעילות נוקה", "success"); },
+                            })}
+                            className="cc-menu-item danger" style={{ ...menuItemBtn("danger"), width: "100%", textAlign: "right" as const }}>
+                            נקה יומן ({activityLog.length})
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
                   {activityLog.length === 0 ? (
-                    <div style={{ color: "#9ca3af", fontSize: "14px", padding: "24px", textAlign: "center" }}>יומן הפעילות ריק</div>
+                    <div style={{ color: "#9ca3af", fontSize: "14px", padding: "32px", textAlign: "center" }}>יומן הפעילות ריק</div>
                   ) : (
-                    <div style={{ overflowX: "auto", maxHeight: "500px", overflowY: "auto" }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-                        <thead>
-                          <tr>
-                            <th style={{ padding: "8px 12px", textAlign: "right", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0 }}>תאריך</th>
-                            <th style={{ padding: "8px 12px", textAlign: "right", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0 }}>מוכר</th>
-                            <th style={{ padding: "8px 12px", textAlign: "right", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0 }}>פעולה</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {activityLog.filter(e => {
-                            if (logSearch && !e.action.includes(logSearch) && !e.seller.includes(logSearch)) return false;
-                            if (logSellerFilter && e.seller !== logSellerFilter) return false;
-                            return true;
-                          }).slice(0, 200).map(entry => (
-                            <tr key={entry.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                              <td style={{ padding: "7px 12px", color: "#64748b", whiteSpace: "nowrap" }}>{entry.date}</td>
-                              <td style={{ padding: "7px 12px" }}>{entry.seller}</td>
-                              <td style={{ padding: "7px 12px" }}>{entry.action}</td>
+                    <div style={{ border: "1px solid #e2e8f0", borderRadius: "12px", overflow: "hidden" }}>
+                      <div style={{ maxHeight: "500px", overflowY: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                          <thead>
+                            <tr>
+                              <th style={thLog}>תאריך ושעה</th>
+                              <th style={thLog}>מוכר</th>
+                              <th style={thLog}>פעולה</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {logEntries.slice(0, 200).map(entry => (
+                              <tr key={entry.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                                <td style={{ padding: "7px 12px", color: "#64748b", whiteSpace: "nowrap" as const }}>{entry.date}</td>
+                                <td style={{ padding: "7px 12px", fontWeight: 600 }}>{entry.seller}</td>
+                                <td style={{ padding: "7px 12px" }}>{entry.action}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   )}
                 </div>
               )}
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ══ Add Seller Modal ══ */}
         {showAddSellerModal && (
