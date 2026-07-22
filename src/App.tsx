@@ -4063,20 +4063,24 @@ const importBackup = async (
                             </div>
                           )}
                           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                            {/* Switch מנהל */}
-                            <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: isLastAdmin ? "not-allowed" : "pointer", opacity: isLastAdmin ? 0.5 : 1 }} title={isLastAdmin ? "אי אפשר להסיר את המנהל האחרון" : ""}>
+                            {/* Switch מנהל — input מכסה את כל השטח, ללא onClick נפרד */}
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", opacity: isLastAdmin ? 0.5 : 1 }} title={isLastAdmin ? "אי אפשר להסיר את המנהל האחרון" : ""}>
                               <span style={{ fontSize: "12px", color: "#6b7280" }}>מנהל</span>
                               <div style={{ position: "relative", width: "36px", height: "20px" }}>
-                                <input type="checkbox" checked={seller.isAdmin}
+                                {/* input מכסה את כל השטח הוויזואלי */}
+                                <input
+                                  type="checkbox"
+                                  checked={seller.isAdmin}
                                   disabled={isLastAdmin}
                                   onChange={e => setSellers(prev => prev.map(s => s.name === seller.name ? { ...s, isAdmin: e.target.checked } : s))}
-                                  style={{ opacity: 0, width: 0, height: 0, position: "absolute" }} />
-                                <div onClick={() => { if (!isLastAdmin) setSellers(prev => prev.map(s => s.name === seller.name ? { ...s, isAdmin: !s.isAdmin } : s)); }}
-                                  style={{ position: "absolute", inset: 0, borderRadius: "10px", background: seller.isAdmin ? "#2563eb" : "#cbd5e1", transition: "background 0.2s", cursor: isLastAdmin ? "not-allowed" : "pointer" }}>
+                                  style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", height: "100%", margin: 0, cursor: isLastAdmin ? "not-allowed" : "pointer", zIndex: 1 }}
+                                />
+                                {/* ויזואל בלבד — pointerEvents: none כדי שהקליק יעבור לinput */}
+                                <div style={{ position: "absolute", inset: 0, borderRadius: "10px", background: seller.isAdmin ? "#2563eb" : "#cbd5e1", transition: "background 0.2s", pointerEvents: "none" }}>
                                   <div style={{ position: "absolute", top: "2px", left: seller.isAdmin ? "18px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "white", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
                                 </div>
                               </div>
-                            </label>
+                            </div>
                             {editingSeller === seller.name ? (
                               <>
                                 <button onClick={() => {
