@@ -117,7 +117,6 @@ type Customer = {
   customerType: CustomerType;
 };
 
-type Role = "admin" | "seller";
 
 type Transaction = {
   id: number;
@@ -320,7 +319,6 @@ export default function App() {
   });
 
   const [currentSeller, setCurrentSeller] = useState("מוכר ראשי");
-  const currentRole: Role = sellers.find(s => s.name === currentSeller)?.isAdmin ? "admin" : "seller";
 
   const [newSeller, setNewSeller] =
     useState("");
@@ -430,7 +428,6 @@ export default function App() {
   const [returnSourceId, setReturnSourceId] = useState<number | null>(null);
   const [returnQtys, setReturnQtys] = useState<Record<number, number>>({});
   const [customersTabSearch, setCustomersTabSearch] = useState("");
-  const [showCustomersModalDayId, setShowCustomersModalDayId] = useState<number | null>(null);
   const [showNewCustomerModalDayId, setShowNewCustomerModalDayId] = useState<number | null>(null);
   const [productSearch, setProductSearch] = useState("");
 
@@ -458,7 +455,6 @@ export default function App() {
   const [logSearch, setLogSearch] = useState("");
   const [logSellerFilter, setLogSellerFilter] = useState("");
   const [logDateFilter, setLogDateFilter] = useState("");
-  const [logActionFilter, setLogActionFilter] = useState("");
   const [settingsLogActionsOpen, setSettingsLogActionsOpen] = useState(false);
 
   const [editingProductId, setEditingProductId] =
@@ -594,7 +590,6 @@ export default function App() {
   const [inventorySelectedDayId, setInventorySelectedDayId] = useState<number | null>(null);
   const [inventorySelectedYear, setInventorySelectedYear] = useState<number>(new Date().getFullYear());
   const [inventoryStep, setInventoryStep] = useState<"select" | "planning" | "packing" | "live" | "closing">("select");
-  const [annualOpen, setAnnualOpen] = useState(false);
   const lastYearFileRef = useRef<HTMLInputElement>(null);
   const saleDayImportRef = useRef<HTMLInputElement>(null);
 
@@ -625,7 +620,7 @@ export default function App() {
   const [packingFilter, setPackingFilter] = useState<"all" | "ok" | "missing" | "excess" | "pending">("all");
   const [liveSearch, setLiveSearch] = useState("");
   const [closingSearch, setClosingSearch] = useState("");
-  const [closingFilter, setClosingFilter] = useState<"all" | "uncounted" | "variance">("all");
+  const [closingFilter, setClosingFilter] = useState<"all" | "counted" | "uncounted" | "variance">("all");
   const [warehouseSearch, setWarehouseSearch] = useState("");
   const [warehouseSupplierFilter, setWarehouseSupplierFilter] = useState("");
   const [warehouseStatusFilter, setWarehouseStatusFilter] = useState("");
@@ -1633,120 +1628,6 @@ export default function App() {
   };
 
 
-  const exportData = () => {
-    const allProductNames = [
-      ...new Set(activeTransactions.flatMap((t) => t.items.map((i) => i.name))),
-    ];
-    const transactionsRows = activeTransactions.map((t) => {
-      const paymentLabels: Record<string, string> = { cash: "מזומן", credit: "אשראי", check: "המחאה" };
-      const row: Record<string, string | number> = {
-        תאריך: t.date,
-        לקוח: t.customerName,
-        טלפון: t.customerPhone,
-        מוכר: t.seller,
-        שיטת_תשלום: paymentLabels[t.paymentMethod || ""] || t.paymentMethod || "",
-        תשלומים: t.installments || 1,
-        סכום: t.finalTotal,
-      };
-      for (const name of allProductNames) {
-        const item = t.items.find((i) => i.name === name);
-        row[name] = item ? item.qty : "";
-      }
-      return row;
-    });
-
-    const customersRows = activeCustomers.map((c) => ({
-      id: c.id,
-      name: c.name,
-      phone: c.phone,
-      idNumber: c.idNumber,
-      customerType: c.customerType,
-    }));
-
-    const productsRows = activeProducts.map((p) => ({
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      price: p.price,
-      stock: p.stock,
-    }));
-
-    const sellersRows = sellers.map((seller) => ({
-      מוכר: seller.name,
-      מנהל: seller.isAdmin ? "כן" : "לא",
-    }));
-
-    const pendingRows = pendingSales.map((t) => ({
-      תאריך: t.date,
-      לקוח: t.customerName,
-      טלפון: t.customerPhone,
-      מוכר: t.seller,
-      סכום: t.finalTotal,
-      מוצרים: t.items
-        .map((i) => `${i.name} x${i.qty}`)
-        .join(" | "),
-    }));
-
-    const workbook = XLSX.utils.book_new();
-
-    const rtlView = [{ rightToLeft: true, RTL: true }];
-    const transactionsSheet = XLSX.utils.json_to_sheet(transactionsRows);
-    (transactionsSheet as any)["!views"] = rtlView;
-    XLSX.utils.book_append_sheet(workbook, transactionsSheet, "עסקאות");
-
-    const customersSheet = XLSX.utils.json_to_sheet(customersRows);
-    (customersSheet as any)["!views"] = rtlView;
-    XLSX.utils.book_append_sheet(workbook, customersSheet, "לקוחות");
-
-    const productsSheet = XLSX.utils.json_to_sheet(productsRows);
-    (productsSheet as any)["!views"] = rtlView;
-    XLSX.utils.book_append_sheet(workbook, productsSheet, "מוצרים");
-
-    const sellersSheet = XLSX.utils.json_to_sheet(sellersRows);
-    (sellersSheet as any)["!views"] = rtlView;
-    XLSX.utils.book_append_sheet(workbook, sellersSheet, "מוכרים");
-
-    const pendingSheet = XLSX.utils.json_to_sheet(pendingRows);
-    (pendingSheet as any)["!views"] = rtlView;
-    XLSX.utils.book_append_sheet(workbook, pendingSheet, "עסקאות בהמתנה");
-
-    XLSX.writeFile(workbook, `full_export_${getFileDateStamp()}.xlsx`, { bookType: "xlsx" });
-  };
-
-  const addProduct = () => {
-    if (currentRole !== "admin") {
-      return;
-    }
-
-    if (!newName || !newCategory) {
-      return;
-    }
-
-    const parsedLevels = newPriceLevels
-      .split(/[,\s]+/)
-      .map(s => Number(s.trim()))
-      .filter(n => n > 0);
-    setActiveProducts((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
-        name: newName,
-        price: Number(newPrice),
-        category: newCategory,
-        stock: 0,
-        ...(parsedLevels.length > 0 ? { priceLevels: parsedLevels } : {}),
-        ...(newGiftTrigger ? { giftTrigger: true } : {}),
-        ...(newIsGiftBag ? { isGiftBag: true } : {}),
-      },
-    ]);
-
-    setNewName("");
-    setNewPrice("");
-    setNewCategory("");
-    setNewPriceLevels("");
-    setNewGiftTrigger(false);
-    setNewIsGiftBag(false);
-  };
   // ── ניהול מלאי ──
   const getInventoryForDay = (day: SaleDay): InventoryItem[] => {
     if (day.inventory && day.inventory.length > 0) return day.inventory;
@@ -1795,8 +1676,8 @@ export default function App() {
     const txs = activeSaleDay.transactions ?? [];
     const preOrders = activeSaleDay.type === "preorder" ? (activeSaleDay.preOrders ?? []) : undefined;
     const row = computeInventoryRow(inv, txs, preOrders);
-    let reserved = row.reservedQty ?? null;
-    let available = row.availableQty ?? null;
+    const reserved = row.reservedQty ?? null;
+    const available = row.availableQty ?? null;
     const cartQty = cart.filter(i => i.id === productId).reduce((s, i) => s + i.qty, 0);
     return {
       remaining: row.remainingQty - cartQty,
@@ -2380,52 +2261,6 @@ const importBackup = async (
     setEditingIsGiftBag(false);
   };
 
-  const moveProduct = (productId: number, direction: "up" | "down") => {
-    setActiveProducts(prev => {
-      const idx = prev.findIndex(p => p.id === productId);
-      if (idx === -1) return prev;
-      if (direction === "up" && idx === 0) return prev;
-      if (direction === "down" && idx === prev.length - 1) return prev;
-      const next = [...prev];
-      const swapIdx = direction === "up" ? idx - 1 : idx + 1;
-      [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
-      return next;
-    });
-  };
-
-  const saveEditedProduct = () => {
-    if (
-      editingProductId === null ||
-      !editingName ||
-      !editingPrice ||
-      !editingCategory
-    ) {
-      return;
-    }
-
-    const parsedLevels = editingPriceLevels
-      .split(/[,\s]+/)
-      .map(s => Number(s.trim()))
-      .filter(n => n > 0);
-    setActiveProducts((prev) =>
-      prev.map((product) =>
-        product.id === editingProductId
-          ? {
-              ...product,
-              name: editingName,
-              price: Number(editingPrice),
-              category: editingCategory,
-              stock: product.stock,
-              priceLevels: parsedLevels.length > 0 ? parsedLevels : undefined,
-              giftTrigger: editingGiftTrigger || undefined,
-              isGiftBag: editingIsGiftBag || undefined,
-            }
-          : product
-      )
-    );
-
-    cancelEditProduct();
-  };
 
   const startEditCustomer = (customer: Customer, idx: number) => {
     setEditingCustomerId(customer.id);
@@ -2528,78 +2363,6 @@ const importBackup = async (
     setManualDiscountAmount("");
   };
 
-  const getDailySalesReport = () => {
-    return activeTransactions.reduce(
-      (acc: Record<string, number>, transaction) => {
-        const date = transaction.dateISO
-          ? new Date(transaction.dateISO)
-          : new Date(transaction.date);
-        const key = date.toLocaleDateString("en-GB");
-        acc[key] =
-          (acc[key] || 0) + transaction.finalTotal;
-        return acc;
-      },
-      {}
-    );
-  };
-
-  const getMonthlySalesReport = () => {
-    return activeTransactions.reduce(
-      (acc: Record<string, number>, transaction) => {
-        const date = transaction.dateISO
-          ? new Date(transaction.dateISO)
-          : new Date(transaction.date);
-        const key = `${date.getFullYear()}-${String(
-          date.getMonth() + 1
-        ).padStart(2, "0")}`;
-        acc[key] =
-          (acc[key] || 0) + transaction.finalTotal;
-        return acc;
-      },
-      {}
-    );
-  };
-
-  const getCategorySalesReport = () => {
-    return activeTransactions.reduce(
-      (acc: Record<string, number>, transaction) => {
-        const grossTotal = transaction.items.reduce((s, i) => s + i.price * i.qty, 0);
-        if (grossTotal === 0) return acc;
-        const ratio = transaction.finalTotal / grossTotal;
-        transaction.items.forEach((item) => {
-          const product = activeProducts.find((p) => p.id === item.id);
-          const category = product?.category || "לא ידוע";
-          acc[category] = (acc[category] || 0) + item.price * item.qty * ratio;
-        });
-        return acc;
-      },
-      {}
-    );
-  };
-
-  const getCustomerSalesReport = () => {
-    return activeTransactions.reduce(
-      (acc: Record<string, number>, transaction) => {
-        acc[transaction.customerName] =
-          (acc[transaction.customerName] || 0) +
-          transaction.finalTotal;
-        return acc;
-      },
-      {}
-    );
-  };
-
-  const getSellerSalesReport = () => {
-    return activeTransactions.reduce(
-      (acc: Record<string, number>, transaction) => {
-        acc[transaction.seller] =
-          (acc[transaction.seller] || 0) +
-          transaction.finalTotal;
-        return acc;
-      },
-      {}
-    );
-  };
 
 
 
@@ -2801,13 +2564,6 @@ const importBackup = async (
               {/* כפתורי פעולה */}
               <div style={{ borderTop: "2px solid #e2e8f0", paddingTop: "12px", flexShrink: 0 }}>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <button onClick={() => { if (cart.length > 0) { setShowPaymentModal(true); setPaymentModalError(""); } }} disabled={cart.length === 0}
-                    className="cc-btn" style={{ ...btn("primary", "lg"), flex: 2, padding: "13px" }}>
-                    💳 מעבר לתשלום
-                  </button>
-                  <button onClick={savePendingSale} className="cc-btn" style={{ ...btn("warning", "lg"), flex: 1 }}>
-                    ⏸ שמור בהמתנה
-                  </button>
                   <div style={{ position: "relative" }}>
                     <button onClick={() => setShowMoreActions(v => !v)} className="cc-btn" style={{ ...menuTriggerBtn(), height: "100%", padding: "0 14px" }}>
                       ⋯
@@ -2838,6 +2594,13 @@ const importBackup = async (
                       </>
                     )}
                   </div>
+                  <button onClick={savePendingSale} className="cc-btn" style={{ ...btn("warning", "lg"), flex: 1 }}>
+                    ⏸ שמור בהמתנה
+                  </button>
+                  <button onClick={() => { if (cart.length > 0) { setShowPaymentModal(true); setPaymentModalError(""); } }} disabled={cart.length === 0}
+                    className="cc-btn" style={{ ...btn("primary", "lg"), flex: 2, padding: "13px" }}>
+                    💳 מעבר לתשלום
+                  </button>
                 </div>
               </div>
             </div>
@@ -2978,8 +2741,6 @@ const importBackup = async (
                         <span style={{ fontWeight: 800, fontSize: "17px" }}>{activeSaleDay.name}</span>
                         <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: "6px", padding: "2px 8px", fontSize: "11px", fontWeight: 700 }}>{typeLabel(activeSaleDay.type)}</span>
                         {activeSaleDay.date && <span style={{ fontSize: "13px", color: "#6b7280" }}>{formatDateIL(activeSaleDay.date)}</span>}
-                        <span style={{ fontSize: "13px", color: "#1e40af", fontWeight: 700 }}>{formatTransactionCount(activeTransactions.filter(t => !t.isReturn).length)}</span>
-                        <span style={{ fontSize: "13px", color: "#15803d", fontWeight: 700 }}>{formatCurrency(activeTransactions.reduce((s, t) => s + t.finalTotal, 0))} נטו</span>
                         {pendingSales.filter(s => s.saleDayId === activeSaleDay.id).length > 0 && (
                           <span style={{ fontSize: "12px", color: "#92400e", background: "#fef3c7", borderRadius: "6px", padding: "2px 8px", fontWeight: 700 }}>{pendingSales.filter(s => s.saleDayId === activeSaleDay.id).length} בהמתנה</span>
                         )}
@@ -3232,12 +2993,6 @@ const importBackup = async (
                     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
                       {/* ══ סקירה ══ */}
                       {saleDayDetailTab === "info" && (() => {
-                        const txs = detailDay.transactions ?? [];
-                        const sales = txs.filter(t => !t.isReturn);
-                        const returns = txs.filter(t => t.isReturn);
-                        const grossTotal = sales.reduce((s, t) => s + t.finalTotal, 0);
-                        const returnTotal = returns.reduce((s, t) => s + t.finalTotal, 0);
-                        const netTotal = grossTotal + returnTotal;
                         const listCount = detailDay.type === "preorder"
                           ? (detailDay.preOrders ?? []).length
                           : (detailDay.customers ?? []).length;
@@ -3246,10 +3001,6 @@ const importBackup = async (
                           { label: "תאריך", value: formatDateIL(detailDay.date) },
                           { label: "סוג", value: typeLabel2(detailDay.type) },
                           { label: "מצב", value: detailDay.isActive ? "פעיל" : "לא פעיל", color: detailDay.isActive ? "#15803d" : "#6b7280" },
-                          { label: "עסקאות", value: formatTransactionCount(sales.length), color: "#1e40af" },
-                          { label: "מכירות ברוטו", value: formatCurrency(grossTotal), color: "#15803d" },
-                          ...(returns.length > 0 ? [{ label: "החזרות", value: `${returns.length} — ${formatCurrency(Math.abs(returnTotal))}`, color: "#dc2626" }] : []),
-                          { label: "נטו", value: formatCurrency(netTotal), color: "#1e40af" },
                           { label: detailDay.type === "preorder" ? "הזמנות" : "לקוחות", value: `${listCount}` },
                         ];
                         return (
@@ -3263,7 +3014,7 @@ const importBackup = async (
                               ))}
                             </div>
                             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                              <button onClick={() => setCashierMode(true)} className="cc-btn" style={btn("primary")}>🏪 כניסה לקופה</button>
+                              {detailDay.isActive && <button onClick={() => setCashierMode(true)} className="cc-btn" style={btn("primary")}>🏪 כניסה לקופה</button>}
                               <button onClick={() => handleActivateSaleDay(detailDay.id)} className="cc-btn" style={btn(detailDay.isActive ? "warning" : "success")}>
                                 {detailDay.isActive ? "⏸ השהה מכירה" : "▶ הפעל מכירה"}
                               </button>
@@ -3962,19 +3713,57 @@ const importBackup = async (
                                 </div>
                               ))}
                             </div>
-                            {Object.keys(byMethod).length > 0 && (
-                              <div style={{ background: "#f8fafc", borderRadius: "12px", padding: "16px", border: "1px solid #e2e8f0" }}>
-                                <div style={{ fontSize: "13px", fontWeight: 700, color: "#374151", marginBottom: "10px" }}>חלוקה לפי אמצעי תשלום</div>
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
-                                  {Object.entries(byMethod).map(([m, amt]) => (
-                                    <div key={m} style={{ background: "white", borderRadius: "10px", padding: "10px 14px", border: "1px solid #e2e8f0", minWidth: "110px" }}>
-                                      <div style={{ fontSize: "12px", color: "#6b7280" }}>{methodLabel(m)}</div>
-                                      <div style={{ fontSize: "16px", fontWeight: 700, color: "#1e40af" }}>{formatCurrency(amt)}</div>
+                            {(() => {
+                              const byDiscount: Record<number, { gross: number; net: number; count: number }> = {};
+                              if (detailDay.type === "walkin") {
+                                sales.forEach(t => {
+                                  const d = t.discountPercent ?? 0;
+                                  if (!byDiscount[d]) byDiscount[d] = { gross: 0, net: 0, count: 0 };
+                                  const itemGross = (t.items ?? []).reduce((s: number, i: { price: number; qty: number }) => s + i.price * i.qty, 0);
+                                  byDiscount[d].gross += itemGross;
+                                  byDiscount[d].net += t.finalTotal;
+                                  byDiscount[d].count += 1;
+                                });
+                              }
+                              const levels = Object.entries(byDiscount).sort(([a], [b]) => Number(a) - Number(b));
+                              const hasDiscount = detailDay.type === "walkin" && levels.length > 0;
+                              const hasMethod = Object.keys(byMethod).length > 0;
+                              if (!hasDiscount && !hasMethod) return null;
+                              return (
+                                <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", alignItems: "flex-start" }}>
+                                  {hasDiscount && (
+                                    <div style={{ background: "#f8fafc", borderRadius: "12px", padding: "16px", border: "1px solid #e2e8f0", flex: "1 1 200px" }}>
+                                      <div style={{ fontSize: "13px", fontWeight: 700, color: "#374151", marginBottom: "10px" }}>חלוקה לפי רמת הנחה</div>
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                                        {levels.map(([d, data]) => (
+                                          <div key={d} style={{ background: "white", borderRadius: "10px", padding: "8px 12px", border: "1px solid #e2e8f0", minWidth: "100px", flex: "1 1 100px" }}>
+                                            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 600, marginBottom: "4px" }}>
+                                              {Number(d) === 0 ? "ללא הנחה" : `הנחה ${d}%`}
+                                              <span style={{ marginRight: "4px", color: "#9ca3af", fontWeight: 400 }}>({data.count})</span>
+                                            </div>
+                                            <div style={{ fontSize: "12px", color: "#6b7280" }}>ברוטו: <span style={{ fontWeight: 700, color: "#374151" }}>{formatCurrency(data.gross)}</span></div>
+                                            <div style={{ fontSize: "12px", color: "#6b7280" }}>נטו: <span style={{ fontWeight: 700, color: "#15803d" }}>{formatCurrency(data.net)}</span></div>
+                                          </div>
+                                        ))}
+                                      </div>
                                     </div>
-                                  ))}
+                                  )}
+                                  {hasMethod && (
+                                    <div style={{ background: "#f8fafc", borderRadius: "12px", padding: "16px", border: "1px solid #e2e8f0", flex: "1 1 200px" }}>
+                                      <div style={{ fontSize: "13px", fontWeight: 700, color: "#374151", marginBottom: "10px" }}>חלוקה לפי אמצעי תשלום</div>
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                                        {Object.entries(byMethod).map(([m, amt]) => (
+                                          <div key={m} style={{ background: "white", borderRadius: "10px", padding: "10px 14px", border: "1px solid #e2e8f0", minWidth: "110px" }}>
+                                            <div style={{ fontSize: "12px", color: "#6b7280" }}>{methodLabel(m)}</div>
+                                            <div style={{ fontSize: "16px", fontWeight: 700, color: "#1e40af" }}>{formatCurrency(amt)}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
-                              </div>
-                            )}
+                              );
+                            })()}
                           </div>
                         );
                       })()}
@@ -4422,22 +4211,6 @@ const importBackup = async (
                 return (
                   <div>
                     {/* כרטיסי סיכום */}
-                    <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "20px" }}>
-                      {[
-                        { label: "מכירות", value: salesEntries.length, color: "#2563eb" },
-                        { label: "סה\"כ גולמי", value: `₪${grossTotal.toFixed(0)}`, color: "#16a34a" },
-                        ...(returnsEntries.length > 0 ? [
-                          { label: "החזרות", value: returnsEntries.length, color: "#dc2626" },
-                          { label: "סה\"כ החזרות", value: `₪${Math.abs(returnsTotal).toFixed(0)}`, color: "#dc2626" },
-                          { label: "נטו", value: `₪${netTotal.toFixed(0)}`, color: "#1e40af" },
-                        ] : []),
-                      ].map(item => (
-                        <div key={item.label} style={{ background: "#f8fafc", borderRadius: "12px", padding: "12px 18px", textAlign: "center", minWidth: "90px" }}>
-                          <div style={{ fontSize: "20px", fontWeight: 800, color: item.color }}>{item.value}</div>
-                          <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>{item.label}</div>
-                        </div>
-                      ))}
-                    </div>
                     {/* בורר יומי/חודשי */}
                     <div style={{ display: "flex", gap: "6px", marginBottom: "14px" }}>
                       {(["daily","monthly"] as const).map(t => (
@@ -4677,11 +4450,7 @@ const importBackup = async (
 
         {!cashierMode && adminTab === "inventory" && inventoryAdminTab === "inventory" && (() => {
           const selectedDay = inventorySelectedDayId ? saleDays.find(d => d.id === inventorySelectedDayId) : null;
-          const years = [...new Set(saleDays.map(d => getSaleDayYear(d)))].sort((a, b) => b - a);
-          const daysInYear = saleDays.filter(d => getSaleDayYear(d) === inventorySelectedYear);
-
           const thStyle: React.CSSProperties = { padding: "10px 12px", textAlign: "right", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 };
-          const tdStyle: React.CSSProperties = { padding: "8px 12px", fontSize: "13px", borderBottom: "1px solid #f1f5f9" };
           const inputNum = (val: number, onChange: (v: number) => void): React.ReactNode =>
             <input type="number" min={0} value={val || ""} onChange={e => onChange(Number(e.target.value) || 0)}
               onWheel={e => (e.target as HTMLElement).blur()}
@@ -4912,9 +4681,6 @@ const importBackup = async (
                                             <option value="">— ללא קישור —</option>
                                             {whOptions.map(w => <option key={w.code} value={w.code}>{w.code} — {w.name}</option>)}
                                           </select>
-                                          {isUnlinked && (
-                                            <div style={{ fontSize: "11px", color: "#d97706", marginTop: "2px" }}>לא מקושר למחסן</div>
-                                          )}
                                         </td>
                                         <td style={{ ...thStyle, background: "white", textAlign: "center", position: "static" as const, fontWeight: 700 }}>{row.requiredQty}</td>
                                         <td style={{ ...thStyle, background: "white", textAlign: "center", position: "static" as const }}>
@@ -5078,23 +4844,6 @@ const importBackup = async (
                         const totalSalesAmt = dayRows.reduce((s, r) => s + r.soldAmount, 0);
                         return (
                           <>
-                            {/* Summary cards */}
-                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px", padding: "14px 16px", borderBottom: "1px solid #f1f5f9", flexShrink: 0 }}>
-                              {([
-                                { label: "נארז", value: totalPacked, color: "#374151" },
-                                { label: "נמכר", value: totalSold, color: "#2563eb" },
-                                ...(isPreorderDay ? [
-                                  { label: "שמור להזמנות", value: totalReserved!, color: "#7c3aed" },
-                                  { label: "פנוי", value: totalAvailable!, color: "#0891b2" },
-                                ] : []),
-                                { label: "סכום מכירות", value: formatCurrency(totalSalesAmt), color: "#16a34a" },
-                              ] as Array<{ label: string; value: number | string; color: string }>).map(c => (
-                                <div key={c.label} style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", textAlign: "center", border: "1px solid #e2e8f0" }}>
-                                  <div style={{ fontSize: "11px", color: "#9ca3af", marginBottom: "4px", fontWeight: 600 }}>{c.label}</div>
-                                  <div style={{ fontSize: "18px", fontWeight: 800, color: c.color, direction: "ltr" }}>{c.value}</div>
-                                </div>
-                              ))}
-                            </div>
                             {/* Toolbar */}
                             <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", padding: "10px 16px", borderBottom: "1px solid #f1f5f9", background: "white", flexShrink: 0 }}>
                               <input placeholder="חיפוש מוצר..." value={liveSearch} onChange={e => setLiveSearch(e.target.value)}
@@ -5170,36 +4919,27 @@ const importBackup = async (
                         const deviationRows = dayRows.filter(r => r.varianceQty != null && r.varianceQty !== 0);
                         const filteredClosing = dayRows.filter(row => {
                           if (closingSearch && !row.productName.toLowerCase().includes(closingSearch.toLowerCase())) return false;
+                          if (closingFilter === "counted") return row.actualEndQty != null;
                           if (closingFilter === "uncounted") return row.actualEndQty == null;
                           if (closingFilter === "variance") return row.varianceQty != null && row.varianceQty !== 0;
                           return true;
                         });
                         return (
                           <>
-                            {/* Summary chips */}
-                            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", padding: "14px 16px", borderBottom: "1px solid #f1f5f9", flexShrink: 0, alignItems: "center" }}>
-                              <span style={{ background: "#dcfce7", color: "#16a34a", borderRadius: "8px", padding: "6px 12px", fontSize: "13px", fontWeight: 700 }}>
-                                ✓ {countedRows.length} נספרו
-                              </span>
-                              <span style={{ background: uncountedRows.length > 0 ? "#fef3c7" : "#f1f5f9", color: uncountedRows.length > 0 ? "#92400e" : "#6b7280", borderRadius: "8px", padding: "6px 12px", fontSize: "13px", fontWeight: 700 }}>
-                                {uncountedRows.length} טרם נספרו
-                              </span>
-                              {deviationRows.length > 0 && (
-                                <span style={{ background: "#fee2e2", color: "#dc2626", borderRadius: "8px", padding: "6px 12px", fontSize: "13px", fontWeight: 700 }}>
-                                  ⚠ {deviationRows.length} עם סטייה
-                                </span>
-                              )}
-                            </div>
                             {/* Toolbar */}
                             <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", padding: "10px 16px", borderBottom: "1px solid #f1f5f9", background: "white", flexShrink: 0 }}>
                               <input placeholder="חיפוש מוצר..." value={closingSearch} onChange={e => setClosingSearch(e.target.value)}
                                 style={{ padding: "7px 11px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "13px", flex: "1 1 160px" }} />
-                              {(["all", "uncounted", "variance"] as const).map(f => (
-                                <button key={f} onClick={() => setClosingFilter(f)} className="cc-btn"
-                                  style={btn(closingFilter === f ? "primary" : "secondary", "sm")}>
-                                  {f === "all" ? "הכול" : f === "uncounted" ? "טרם נספרו" : "עם סטייה"}
-                                </button>
-                              ))}
+                              {(["all", "counted", "uncounted", "variance"] as const).map(f => {
+                                const count = f === "all" ? dayRows.length : f === "counted" ? countedRows.length : f === "uncounted" ? uncountedRows.length : deviationRows.length;
+                                const label = f === "all" ? "הכול" : f === "counted" ? "נספרו" : f === "uncounted" ? "טרם נספרו" : "עם סטייה";
+                                return (
+                                  <button key={f} onClick={() => setClosingFilter(f)} className="cc-btn"
+                                    style={btn(closingFilter === f ? "primary" : "secondary", "sm")}>
+                                    {label} ({count})
+                                  </button>
+                                );
+                              })}
                               <button onClick={() => exportInventoryToXlsx(selectedDay)} className="cc-btn" style={btn("secondary", "sm")}>
                                 ↓ ייצא לאקסל
                               </button>
@@ -6164,7 +5904,7 @@ const importBackup = async (
       {confirmDialog && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={() => setConfirmDialog(null)}>
-          <div style={{ background: "white", borderRadius: "20px", padding: "28px 32px", maxWidth: "420px", width: "90%", direction: "rtl", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}
+          <div style={{ background: "white", borderRadius: "20px", padding: "28px 32px", maxWidth: "420px", width: "90%", direction: "rtl", boxShadow: "0 20px 60px rgba(0,0,0,0.25)", textAlign: "center" }}
             onClick={e => e.stopPropagation()}>
             <h3 style={{ margin: "0 0 10px", fontSize: "18px", color: "#111827" }}>{confirmDialog.title}</h3>
             {confirmDialog.itemName && (
@@ -6173,7 +5913,7 @@ const importBackup = async (
               </div>
             )}
             <p style={{ margin: "0 0 24px", color: "#6b7280", fontSize: "14px", whiteSpace: "pre-line" }}>{confirmDialog.message}</p>
-            <div style={{ display: "flex", gap: "10px", justifyContent: "flex-start" }}>
+            <div style={{ display: "flex", gap: "10px", justifyContent: "center" }}>
               <button onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
                 className="cc-btn" style={btn(confirmDialog.confirmVariant ?? "danger", "md")}>
                 {confirmDialog.confirmLabel ?? "אישור"}
