@@ -1,6 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import React from "react";
 
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        oauth2: {
+          initTokenClient: (cfg: {
+            client_id: string;
+            scope: string;
+            callback: (r: { access_token?: string; expires_in?: number; error?: string }) => void;
+          }) => { requestAccessToken: (o?: { prompt?: string }) => void };
+        };
+      };
+    };
+  }
+}
+
 // ── module-level design tokens (available in ErrorBoundary + App) ──
 const CC_BTN_CSS = [
   ".cc-btn:hover:not(:disabled){opacity:.83}",
@@ -49,6 +65,16 @@ const formatDateIL = (d: string) => {
   return p.length === 3 ? `${p[2]}.${p[1]}.${p[0]}` : d;
 };
 const formatTransactionCount = (n: number) => n === 1 ? "עסקה אחת" : `${n} עסקאות`;
+
+const getStorageUsage = () => {
+  let chars = 0;
+  for (const key of Object.keys(localStorage)) {
+    chars += key.length + (localStorage.getItem(key)?.length ?? 0);
+  }
+  const bytes = chars * 2;
+  const quota = 5 * 1024 * 1024;
+  return { bytes, kb: Math.round(bytes / 1024), mb: (bytes / (1024 * 1024)).toFixed(2), percent: Math.min(100, Math.round((bytes / quota) * 100)) };
+};
 
 class ErrorBoundary extends React.Component<any, { error: any }>{
   constructor(props: any) {
@@ -118,6 +144,15 @@ type Customer = {
 };
 
 
+type PaymentPart = {
+  method: "cash" | "check" | "credit";
+  amount: number;
+  cashReceived?: number;
+  cashChange?: number;
+  installments?: number;
+};
+type SplitPayment = { payments: PaymentPart[] };
+
 type Transaction = {
   id: number;
   items: CartItem[];
@@ -139,6 +174,7 @@ type Transaction = {
   returnForId?: number;
   preOrderId?: number;
   saleDayId?: number;
+  splitPayment?: SplitPayment;
 };
 
 const defaultProducts: Product[] = [
@@ -187,14 +223,22 @@ type InventoryItem = {
   warehouseCode?: string;
 };
 
+type WarehouseEntry = {
+  id: number;
+  qty: number;
+  datetime: string;
+  notes?: string;
+};
+
 type WarehouseItem = {
   id: number;
   year: number;
   code: string;
   name: string;
   openingQty: number;
-  addedQty: number;
+  addedQty: number;      // legacy — kept for backwards compat
   adjustmentQty: number;
+  entries?: WarehouseEntry[];
   notes?: string;
   supplier?: string;
   costPrice?: number;
@@ -213,6 +257,30 @@ type SaleDay = {
   transactions: Transaction[];
   inventory?: InventoryItem[];
   priceLevels?: number[];
+};
+
+type Expense = {
+  id: number;
+  name: string;
+  description: string;
+  saleDayId: number | null;
+  date: string;
+  recipient: string;
+  amount: number;
+  paid: boolean;
+};
+
+type WorkDay = { date: string; hours: number };
+
+type WorkerExpense = {
+  id: number;
+  workerName: string;
+  saleDayId: number | null;
+  paid: boolean;
+  paymentType: "manual" | "hourly";
+  manualAmount: number;
+  hourlyRate: number;
+  workDays: WorkDay[];
 };
 
 export default function App() {
@@ -280,6 +348,11 @@ export default function App() {
 
   const [showCreditModal, setShowCreditModal] =
     useState(false);
+  const creditPriorPaymentsRef = useRef<PaymentPart[]>([]);
+  const creditChargeAmountRef = useRef<number>(0);
+
+  const [modalPayments, setModalPayments] = useState<PaymentPart[]>([]);
+  const [modalPaymentAmount, setModalPaymentAmount] = useState("");
 
   const [creditPaymentProcessing, setCreditPaymentProcessing] =
     useState(false);
@@ -345,6 +418,7 @@ export default function App() {
 
   const [newCustomerType, setNewCustomerType] =
     useState<CustomerType>("3");
+  const [newCustomerError, setNewCustomerError] = useState("");
 
   const [editingCustomerId, setEditingCustomerId] =
     useState<number | null>(null);
@@ -421,6 +495,8 @@ export default function App() {
   const [txSearch, setTxSearch] = useState("");
   const [editingCustomerIdx, setEditingCustomerIdx] = useState<number | null>(null);
   const [showCloseDayModal, setShowCloseDayModal] = useState(false);
+  const [postCloseDay, setPostCloseDay] = useState<SaleDay | null>(null);
+  const [postCloseSending, setPostCloseSending] = useState(false);
   const [closeDayActuals, setCloseDayActuals] = useState<Record<number, number>>({});
   const [expandedOrderId, setExpandedOrderId] = useState<number | null>(null);
   const [showReturnModal, setShowReturnModal] = useState(false);
@@ -430,6 +506,19 @@ export default function App() {
   const [customersTabSearch, setCustomersTabSearch] = useState("");
   const [showNewCustomerModalDayId, setShowNewCustomerModalDayId] = useState<number | null>(null);
   const [productSearch, setProductSearch] = useState("");
+
+  // ── אבטחה ──
+  const [appPassword, setAppPassword] = useState<string>(() => {
+    try { return localStorage.getItem("appPassword") ?? ""; } catch { return ""; }
+  });
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    try { return sessionStorage.getItem("appAuth") === "1"; } catch { return false; }
+  });
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState(false);
+  const [newPasswordInput, setNewPasswordInput] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
+  const [passwordSettingsMsg, setPasswordSettingsMsg] = useState("");
 
   // ── ConfirmDialog, AlertDialog & Toast ──
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -442,7 +531,13 @@ export default function App() {
   // ── Internal tab states ──
   const [reportTab, setReportTab] = useState<"sales" | "breakdown" | "inventory">("sales");
   const [breakdownTab, setBreakdownTab] = useState<"category" | "customer" | "seller">("category");
-  const [settingsTab, setSettingsTab] = useState<"sellers" | "backup" | "integrity" | "log">("sellers");
+  const [settingsTab, setSettingsTab] = useState<"sellers" | "backup" | "integrity" | "log" | "alerts" | "payment" | "security">("sellers");
+  const [nedarimConfig, setNedarimConfig] = useState<{ mosad: string; apiValid: string }>(() => {
+    try { const s = localStorage.getItem("nedarimConfig"); const p = s ? JSON.parse(s) : {}; return { mosad: p.mosad ?? "", apiValid: p.apiValid ?? "" }; } catch { return { mosad: "", apiValid: "" }; }
+  });
+  const [emailJSConfig, setEmailJSConfig] = useState<{ publicKey: string; serviceId: string; templateId: string; recipientEmail: string; saleLowStockThreshold: number; gmailClientId: string }>(() => {
+    try { const s = localStorage.getItem("emailJSConfig"); const p = s ? JSON.parse(s) : {}; return { publicKey: p.publicKey ?? "", serviceId: p.serviceId ?? "", templateId: p.templateId ?? "", recipientEmail: p.recipientEmail ?? "", saleLowStockThreshold: p.saleLowStockThreshold ?? p.lowStockThreshold ?? 3, gmailClientId: p.gmailClientId ?? "" }; } catch { return { publicKey: "", serviceId: "", templateId: "", recipientEmail: "", saleLowStockThreshold: 3, gmailClientId: "" }; }
+  });
 
   // ── Home screen filters ──
   const [homeSearch, setHomeSearch] = useState("");
@@ -589,9 +684,16 @@ export default function App() {
 
   const [inventorySelectedDayId, setInventorySelectedDayId] = useState<number | null>(null);
   const [inventorySelectedYear, setInventorySelectedYear] = useState<number>(new Date().getFullYear());
+  const [annualInventoryExpandedKey, setAnnualInventoryExpandedKey] = useState<string | null>(null);
   const [inventoryStep, setInventoryStep] = useState<"select" | "planning" | "packing" | "live" | "closing">("select");
   const lastYearFileRef = useRef<HTMLInputElement>(null);
   const saleDayImportRef = useRef<HTMLInputElement>(null);
+  const storageWarnedRef = useRef(false);
+  const moreActionsRef = useRef<HTMLButtonElement>(null);
+  const warehouseDetailScrollRef = useRef<HTMLDivElement>(null);
+  const saleLowStockAlertedRef = useRef<Set<number>>(new Set());
+  const gmailTokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
+  const [gmailAuthStatus, setGmailAuthStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
 
   const [warehouseItems, setWarehouseItems] = useState<WarehouseItem[]>(() => {
     const saved = localStorage.getItem("warehouseItems");
@@ -600,8 +702,32 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("warehouseItems", JSON.stringify(warehouseItems));
   }, [warehouseItems]);
+  useEffect(() => {
+    if (appPassword) localStorage.setItem("appPassword", appPassword);
+    else localStorage.removeItem("appPassword");
+  }, [appPassword]);
+  useEffect(() => {
+    localStorage.setItem("nedarimConfig", JSON.stringify(nedarimConfig));
+  }, [nedarimConfig]);
+  useEffect(() => {
+    localStorage.setItem("emailJSConfig", JSON.stringify(emailJSConfig));
+  }, [emailJSConfig]);
+  useEffect(() => {
+    const usage = getStorageUsage();
+    if (usage.percent >= 75 && !storageWarnedRef.current) {
+      storageWarnedRef.current = true;
+      addToast(`⚠ האחסון ${usage.percent}% מלא (${usage.mb} MB מתוך ~5 MB) — מומלץ לגבות ולנקות יומן`, "warning");
+    } else if (usage.percent < 70) {
+      storageWarnedRef.current = false;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activityLog.length, warehouseItems.length, saleDays.length]);
   const [warehouseYear, setWarehouseYear] = useState<number>(new Date().getFullYear());
   const [warehouseDetailCode, setWarehouseDetailCode] = useState<string | null>(null);
+  const [warehouseDetailTab, setWarehouseDetailTab] = useState<"summary" | "days" | "entries">("summary");
+  useEffect(() => {
+    if (warehouseDetailScrollRef.current) warehouseDetailScrollRef.current.scrollTop = 0;
+  }, [warehouseDetailCode, warehouseDetailTab]);
   const [warehouseFormVisible, setWarehouseFormVisible] = useState(false);
   const [warehouseEditId, setWarehouseEditId] = useState<number | null>(null);
   const [whCode, setWhCode] = useState("");
@@ -612,6 +738,10 @@ export default function App() {
   const [whNotes, setWhNotes] = useState("");
   const [whSupplier, setWhSupplier] = useState("");
   const [whCostPrice, setWhCostPrice] = useState("");
+  const [whEntryModalItemId, setWhEntryModalItemId] = useState<number | null>(null);
+  const [whEntryQty, setWhEntryQty] = useState("");
+  const [whEntryDatetime, setWhEntryDatetime] = useState("");
+  const [whEntryNotes, setWhEntryNotes] = useState("");
   const [warehouseView, setWarehouseView] = useState<"items" | "suppliers">("items");
   const [collapsedSuppliers, setCollapsedSuppliers] = useState<Set<string>>(new Set());
   const [planningSearch, setPlanningSearch] = useState("");
@@ -627,7 +757,16 @@ export default function App() {
 
   // ── מצב ניווט חדש ──
   const [cashierMode, setCashierMode] = useState(false);
-  const [adminTab, setAdminTab] = useState<"home" | "sales" | "inventory" | "reports" | "settings">("home");
+  const [adminTab, setAdminTab] = useState<"home" | "sales" | "inventory" | "reports" | "expenses" | "settings">("home");
+  const [expenses, setExpenses] = useState<Expense[]>(() => { try { return JSON.parse(localStorage.getItem("expenses") ?? "[]"); } catch { return []; } });
+  const [workerExpenses, setWorkerExpenses] = useState<WorkerExpense[]>(() => { try { return JSON.parse(localStorage.getItem("workerExpenses") ?? "[]"); } catch { return []; } });
+  const [expensesTab, setExpensesTab] = useState<"expenses" | "workers" | "summary">("expenses");
+  const [expenseForm, setExpenseForm] = useState<Expense | null>(null);
+  const [workerForm, setWorkerForm] = useState<WorkerExpense | null>(null);
+  const [workerNewDay, setWorkerNewDay] = useState<{ date: string; hours: string }>({ date: new Date().toISOString().slice(0, 10), hours: "" });
+  const [expensesSummaryDayKey, setExpensesSummaryDayKey] = useState<string>("null");
+  useEffect(() => { localStorage.setItem("expenses", JSON.stringify(expenses)); }, [expenses]);
+  useEffect(() => { localStorage.setItem("workerExpenses", JSON.stringify(workerExpenses)); }, [workerExpenses]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [paymentModalError, setPaymentModalError] = useState("");
@@ -753,7 +892,12 @@ export default function App() {
         const fixedPrice = product.price;
         const currentQty = cart.filter(i => i.id === product.id && i.price === fixedPrice).reduce((s, i) => s + i.qty, 0);
         const err = checkCanAddToCart(product.id, currentQty);
-        if (err) { addToast(err, "error"); return; }
+        if (err) {
+          if (err.overridable) {
+            showConfirm({ title: "אין מלאי פנוי — אישור מוכר", message: `${err.message}\n\nהאם למכור בכל זאת על חשבון ההזמנות?`, confirmLabel: "כן, מכור בכל זאת", confirmVariant: "warning", onConfirm: () => { setCart(prev => { const ex = prev.find(i => i.id === product.id && i.price === fixedPrice); if (ex) return prev.map(i => (i.id === product.id && i.price === fixedPrice) ? { ...i, qty: i.qty + 1 } : i); return [...prev, { id: product.id, name: product.name, price: fixedPrice, qty: 1 }]; }); reduceReservationForOverride(product.id, product.name); } });
+          } else { addToast(err.message, "error"); }
+          return;
+        }
         setCart(prev => {
           const existing = prev.find(i => i.id === product.id && i.price === fixedPrice);
           if (existing) return prev.map(i => (i.id === product.id && i.price === fixedPrice) ? { ...i, qty: i.qty + 1 } : i);
@@ -767,7 +911,12 @@ export default function App() {
     }
     const currentQty = cart.find(i => i.id === product.id)?.qty ?? 0;
     const err = checkCanAddToCart(product.id, currentQty);
-    if (err) { addToast(err, "error"); return; }
+    if (err) {
+      if (err.overridable) {
+        showConfirm({ title: "אין מלאי פנוי — אישור מוכר", message: `${err.message}\n\nהאם למכור בכל זאת על חשבון ההזמנות?`, confirmLabel: "כן, מכור בכל זאת", confirmVariant: "warning", onConfirm: () => { setCart(prev => { const ex = prev.find(item => item.id === product.id); if (ex) return prev.map(item => item.id === product.id ? { ...item, qty: item.qty + 1 } : item); return [...prev, { id: product.id, name: product.name, price: getEffectivePrice(product.price), qty: 1 }]; }); reduceReservationForOverride(product.id, product.name); } });
+      } else { addToast(err.message, "error"); }
+      return;
+    }
     setCart((prev) => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) return prev.map(item => item.id === product.id ? { ...item, qty: item.qty + 1 } : item);
@@ -789,12 +938,39 @@ export default function App() {
   const increaseQty = (id: number, price?: number) => {
     const currentQty = cart.filter(i => i.id === id && (price === undefined || i.price === price)).reduce((s, i) => s + i.qty, 0);
     const err = checkCanAddToCart(id, currentQty);
-    if (err) { addToast(err, "error"); return; }
+    if (err) {
+      if (err.overridable) {
+        showConfirm({ title: "אין מלאי פנוי — אישור מוכר", message: `${err.message}\n\nהאם להגדיל כמות בכל זאת על חשבון ההזמנות?`, confirmLabel: "כן, הגדל בכל זאת", confirmVariant: "warning", onConfirm: () => { setCart(prev => prev.map(item => item.id === id && (price === undefined || item.price === price) ? { ...item, qty: item.qty + 1 } : item)); const pName = activeProducts.find(p => p.id === id)?.name ?? String(id); reduceReservationForOverride(id, pName); } });
+      } else { addToast(err.message, "error"); }
+      return;
+    }
     setCart(prev => prev.map(item =>
       item.id === id && (price === undefined || item.price === price)
         ? { ...item, qty: item.qty + 1 }
         : item
     ));
+  };
+
+  // מוריד כמות 1 מהזמנה הממתינה עם הכי הרבה מאותו מוצר — לשימוש בעת מכירה על חשבון הזמנות
+  const reduceReservationForOverride = (productId: number, productName: string) => {
+    if (!activeSaleDay) return;
+    setSaleDays(prev => prev.map(day => {
+      if (day.id !== activeSaleDay.id) return day;
+      const pending = (day.preOrders ?? []).filter(o => o.status === "pending" && o.items.some(i => i.id === productId));
+      if (!pending.length) return day;
+      const target = pending.reduce((best, o) => {
+        const bQty = best.items.find(i => i.id === productId)?.qty ?? 0;
+        const oQty = o.items.find(i => i.id === productId)?.qty ?? 0;
+        return oQty > bQty ? o : best;
+      }, pending[0]);
+      const updatedPreOrders = (day.preOrders ?? []).map(o => {
+        if (o.id !== target.id) return o;
+        const newItems = o.items.map(i => i.id === productId ? { ...i, qty: i.qty - 1 } : i).filter(i => i.qty > 0);
+        return { ...o, items: newItems };
+      });
+      logActivity(`מכירה על חשבון הזמנות — "${productName}" הופחת מהזמנה של ${target.customerName}`);
+      return { ...day, preOrders: updatedPreOrders };
+    }));
   };
 
   const decreaseQty = (id: number, price?: number) => {
@@ -867,57 +1043,43 @@ export default function App() {
   const roundingDiff =
     effectiveFinalTotal - finalTotal;
 
-  const completeSale = () => {
-    if (cart.length === 0) {
-      return;
-    }
+  const completeSale = (allPayments?: PaymentPart[]) => {
+    if (cart.length === 0) return;
 
-    if (paymentMethod === "cash") {
-      if (!cashReceived || cashReceived.trim() === "") {
-        setPaymentModalError("יש להזין את הסכום שהתקבל");
-        return;
+    // build final payments list
+    const parts = allPayments ?? (() => {
+      if (paymentMethod === "cash") {
+        if (!cashReceived || cashReceived.trim() === "") { setPaymentModalError("יש להזין את הסכום שהתקבל"); return undefined; }
+        const received = Number(cashReceived);
+        if (received < effectiveFinalTotal) { setPaymentModalError(`הסכום שהתקבל (₪${received.toFixed(2)}) נמוך מהסכום לתשלום (₪${effectiveFinalTotal.toFixed(2)})`); return undefined; }
       }
-      const received = Number(cashReceived);
-      if (received < effectiveFinalTotal) {
-        setPaymentModalError(`הסכום שהתקבל (₪${received.toFixed(2)}) נמוך מהסכום לתשלום (₪${effectiveFinalTotal.toFixed(2)})`);
-        return;
-      }
-    }
+      return [{
+        method: paymentMethod as PaymentPart["method"],
+        amount: effectiveFinalTotal,
+        cashReceived: paymentMethod === "cash" ? Number(cashReceived || 0) : undefined,
+        cashChange: paymentMethod === "cash" ? Number(cashReceived || 0) - effectiveFinalTotal : undefined,
+        installments: paymentMethod === "check" ? checkInstallments : paymentMethod === "credit" ? creditInstallments : 1,
+      }];
+    })();
+    if (!parts) return;
 
-    const paymentDetails = {
-      paymentMethod,
-      installments:
-        paymentMethod === "check"
-          ? checkInstallments
-          : paymentMethod === "credit"
-          ? creditInstallments
-          : 1,
-      cashReceived:
-        paymentMethod === "cash"
-          ? Number(cashReceived || 0)
-          : undefined,
-      cashChange:
-        paymentMethod === "cash"
-          ? Number(cashReceived || 0) - effectiveFinalTotal
-          : undefined,
-    };
+    const txFinalTotal = Math.round(parts.reduce((s, p) => s + p.amount, 0) * 100) / 100;
+    const paymentDetails = parts.length === 1
+      ? { paymentMethod: parts[0].method, installments: parts[0].installments ?? 1, cashReceived: parts[0].cashReceived, cashChange: parts[0].cashChange }
+      : { paymentMethod: "split", installments: 1, splitPayment: { payments: parts } };
 
     const transaction: Transaction = {
       id: Date.now(),
       items: cart,
       total: total - giftBagDiscount,
-      finalTotal: effectiveFinalTotal,
+      finalTotal: txFinalTotal,
       discountPercent,
       date: new Date().toLocaleString(),
       dateISO: new Date().toISOString(),
       seller: currentSeller,
       customerId: selectedCustomer?.id,
-      customerName:
-        selectedCustomer?.name ||
-        "מזדמן",
-      customerPhone:
-        selectedCustomer?.phone ||
-        "",
+      customerName: selectedCustomer?.name || "מזדמן",
+      customerPhone: selectedCustomer?.phone || "",
       ...(activeSaleDay ? { saleDayId: activeSaleDay.id } : {}),
       ...(activePreOrderRef ? { preOrderId: activePreOrderRef.orderId } : {}),
       ...paymentDetails,
@@ -937,7 +1099,13 @@ export default function App() {
       setActivePreOrderRef(null);
     }
 
-    logActivity(`סיום עסקה — ${selectedCustomer?.name || "מזדמן"} ₪${effectiveFinalTotal.toFixed(2)}`);
+    logActivity(`סיום עסקה — ${selectedCustomer?.name || "מזדמן"} ₪${txFinalTotal.toFixed(2)}`);
+
+    // בדיקת מלאי נמוך אוטומטית אחרי כל עסקה
+    if (activeSaleDay) {
+      const allTxs = [transaction, ...(activeSaleDay.transactions ?? [])];
+      autoCheckSaleLowStock(activeSaleDay, allTxs);
+    }
     setCart([]);
     setManualDiscountAmount("");
     setShowCreditModal(false);
@@ -945,6 +1113,8 @@ export default function App() {
     setCashReceived("");
     setCheckInstallments(1);
     setCreditInstallments(1);
+    setModalPayments([]);
+    setModalPaymentAmount("");
   };
 
   const sendCreditPayment = () => {
@@ -955,8 +1125,8 @@ export default function App() {
     iframe.contentWindow.postMessage({
       Name: "FinishTransaction2",
       Value: {
-        Mosad: "7005701",
-        ApiValid: "6qvjd/RCnK",
+        Mosad: nedarimConfig.mosad,
+        ApiValid: nedarimConfig.apiValid,
         PaymentType: "Ragil",
         Currency: "1",
         Zeout: "",
@@ -966,7 +1136,7 @@ export default function App() {
         City: "",
         Phone: selectedCustomer?.phone ?? "",
         Mail: "",
-        Amount: effectiveFinalTotal.toFixed(2),
+        Amount: (creditChargeAmountRef.current || effectiveFinalTotal).toFixed(2),
         Tashlumim: String(creditInstallments),
         Groupe: "",
         Comment: "",
@@ -1004,7 +1174,17 @@ export default function App() {
       const v = msg.Value ?? {};
       if (v.StatusCode === "000" || v.Status === "OK") {
         setCreditPaymentSuccess(true);
-        setTimeout(() => completeSale(), 2000);
+        setTimeout(() => {
+          const prior = creditPriorPaymentsRef.current;
+          if (prior.length > 0) {
+            const creditAmt = creditChargeAmountRef.current;
+            completeSale([...prior, { method: "credit", amount: creditAmt, installments: creditInstallments }]);
+          } else {
+            completeSale();
+          }
+          creditPriorPaymentsRef.current = [];
+          creditChargeAmountRef.current = 0;
+        }, 2000);
       } else {
         const parts: string[] = [];
         if (v.StatusCode) parts.push(`קוד: ${v.StatusCode}`);
@@ -1065,12 +1245,16 @@ export default function App() {
   };
 
   const deletePendingSale = (id: number) => {
+    const sale = pendingSales.find(s => s.id === id);
     showConfirm({
       title: "מחיקת עסקה ממתינה",
       message: "למחוק עסקה זו מההמתנה?",
       confirmLabel: "מחק",
       confirmVariant: "danger",
-      onConfirm: () => setPendingSales(prev => prev.filter(sale => sale.id !== id)),
+      onConfirm: () => {
+        logActivity(`ביטול עסקה ממתינה — ${sale?.customerName || "ללא שם"} ₪${sale?.finalTotal ?? ""}`);
+        setPendingSales(prev => prev.filter(s => s.id !== id));
+      },
     });
   };
 
@@ -1112,7 +1296,198 @@ export default function App() {
   };
 
   const logActivity = (action: string) => {
-    setActivityLog(prev => [{ id: Date.now(), date: new Date().toLocaleString(), seller: currentSeller, action }, ...prev].slice(0, 500));
+    setActivityLog(prev => [{ id: Date.now(), date: new Date().toLocaleString(), seller: currentSeller, action }, ...prev].slice(0, 2000));
+  };
+
+  // שליחה גנרית — כל פונקציות המייל משתמשות בזה
+  const sendEmailAlert = async (message: string, silent = false): Promise<boolean> => {
+    const { publicKey, serviceId, templateId, recipientEmail } = emailJSConfig;
+    if (!publicKey || !serviceId || !templateId || !recipientEmail) {
+      if (!silent) addToast("יש להגדיר פרמטרי EmailJS בהגדרות → התראות מייל", "error");
+      return false;
+    }
+    try {
+      const emailjs = await import("@emailjs/browser");
+      emailjs.init(publicKey);
+      await emailjs.send(serviceId, templateId, { to_email: recipientEmail, message, from_name: "מערכת להדר" });
+      return true;
+    } catch { if (!silent) addToast("שגיאה בשליחת המייל — בדוק הגדרות EmailJS", "error"); return false; }
+  };
+
+  // א. דוח חסרים מהמחסן (לחצן ידני)
+  const sendWarehouseShortageAlert = async () => {
+    let rows: ReturnType<typeof getWarehouseSummary> = [];
+    let activeYear = warehouseYear;
+    rows = getWarehouseSummary(activeYear);
+    if (rows.length === 0) {
+      const years = [...new Set(warehouseItems.map(w => w.year))].sort((a, b) => b - a);
+      for (const y of years) { const r = getWarehouseSummary(y); if (r.length > 0) { rows = r; activeYear = y; break; } }
+    }
+    const shortageItems = rows.filter(r => r.shortageQty > 0);
+    if (shortageItems.length === 0) { addToast(`אין פריטים עם סטטוס חסר בשנת ${activeYear}`, "info"); return; }
+    const lines = shortageItems.map(r =>
+      `• ${r.name} (${r.code})\n  דרוש: ${r.requiredTotal} | לאריזה: ${r.plannedTotal} | נארז: ${r.packedTotal} | קיים: ${r.currentQty} | חסר: ${r.shortageQty}`
+    ).join("\n\n");
+    const subject = `דוח חסרים במחסן — ${activeYear}`;
+    const message = `דוח חסרים במחסן — ${new Date().toLocaleString()}\nשנה: ${activeYear}\n\n${lines}\n\nסה"כ פריטים עם חסר: ${shortageItems.length}`;
+    const recipient = emailJSConfig.recipientEmail;
+    let ok = false;
+    if (emailJSConfig.gmailClientId && recipient) {
+      ok = await sendViaGmail(recipient, subject, message);
+    } else {
+      ok = await sendEmailAlert(message);
+    }
+    if (ok) { addToast(`דוח חסרים נשלח (${shortageItems.length} פריטים)`, "success"); logActivity(`דוח חסרים נשלח — ${shortageItems.length} פריטים`); }
+  };
+
+  // ב. בדיקה אוטומטית של מלאי נמוך אחרי כל עסקה
+  const autoCheckSaleLowStock = (day: SaleDay, newTxs: Transaction[]) => {
+    const { saleLowStockThreshold } = emailJSConfig;
+    const hasGmail = !!(emailJSConfig.gmailClientId && emailJSConfig.recipientEmail);
+    if (!hasGmail && (!emailJSConfig.publicKey || !emailJSConfig.serviceId)) return;
+    const alertedIds = saleLowStockAlertedRef.current;
+    const lowItems: { name: string; remaining: number }[] = [];
+    for (const inv of (day.inventory ?? [])) {
+      if (alertedIds.has(inv.productId)) continue;
+      const row = computeInventoryRow(inv, newTxs, day.type === "preorder" ? (day.preOrders ?? []) : undefined);
+      if (row.remainingQty <= saleLowStockThreshold && row.remainingQty >= 0) {
+        alertedIds.add(inv.productId);
+        lowItems.push({ name: inv.productName, remaining: row.remainingQty });
+      }
+    }
+    if (!lowItems.length) return;
+    const lines = lowItems.map(i => `• ${i.name}: נותרו ${i.remaining} יח'`).join("\n");
+    const subject = `⚠ התראת מלאי נמוך — ${day.name}`;
+    const message = `⚠ התראת מלאי נמוך — ${day.name}\n${new Date().toLocaleString()}\n\n${lines}\n\nסף הגדרה: ${saleLowStockThreshold} יח'`;
+    const sendFn = hasGmail
+      ? sendViaGmail(emailJSConfig.recipientEmail!, subject, message)
+      : sendEmailAlert(message, true);
+    sendFn.then(ok => {
+      if (ok) logActivity(`התראה על מלאי נמוך — ${lowItems.length} מוצרים`);
+    });
+  };
+
+  // ג. מייל סיכום אוטומטי בסגירת יום מכירה
+  const utf8ToB64 = (str: string) => btoa(unescape(encodeURIComponent(str)));
+
+  const bodyToHtmlRtl = (text: string) =>
+    `<html dir="rtl" lang="he"><head><meta charset="UTF-8"></head><body dir="rtl" style="direction:rtl;text-align:right;font-family:Arial,sans-serif;font-size:14px;line-height:1.6"><pre dir="rtl" style="direction:rtl;text-align:right;white-space:pre-wrap;font-family:inherit">${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre></body></html>`;
+
+  const buildGmailMime = (to: string, subject: string, body: string, filename: string, fileContent: string): string => {
+    const boundary = `boundary_${Date.now()}`;
+    const subjectEncoded = `=?UTF-8?B?${utf8ToB64(subject)}?=`;
+    const filenameEncoded = `=?UTF-8?B?${utf8ToB64(filename)}?=`;
+    const bodyB64 = utf8ToB64(bodyToHtmlRtl(body));
+    const fileB64 = utf8ToB64(fileContent);
+    const mime = [
+      `To: ${to}`,
+      `Subject: ${subjectEncoded}`,
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/html; charset=UTF-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      bodyB64,
+      "",
+      `--${boundary}`,
+      `Content-Type: application/json; name="${filenameEncoded}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${filenameEncoded}"`,
+      "",
+      fileB64,
+      "",
+      `--${boundary}--`,
+    ].join("\r\n");
+    return btoa(mime).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+
+  const getGmailToken = (): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      if (gmailTokenRef.current && Date.now() < gmailTokenRef.current.expiresAt) {
+        resolve(gmailTokenRef.current.token);
+        return;
+      }
+      if (!window.google?.accounts?.oauth2) {
+        reject(new Error("ספריית Google לא נטענה — רענן את הדף ונסה שנית"));
+        return;
+      }
+      const clientId = emailJSConfig.gmailClientId;
+      if (!clientId) {
+        reject(new Error("Gmail Client ID לא מוגדר בהגדרות"));
+        return;
+      }
+      setGmailAuthStatus("connecting");
+      const tc = window.google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: "https://www.googleapis.com/auth/gmail.send",
+        callback: (r) => {
+          if (r.error || !r.access_token) {
+            setGmailAuthStatus("error");
+            reject(new Error(r.error ?? "שגיאה בהרשאת Gmail"));
+            return;
+          }
+          gmailTokenRef.current = { token: r.access_token, expiresAt: Date.now() + ((r.expires_in ?? 3600) - 60) * 1000 };
+          setGmailAuthStatus("connected");
+          resolve(r.access_token);
+        },
+      });
+      tc.requestAccessToken({ prompt: "" });
+    });
+  };
+
+  const sendViaGmail = async (to: string, subject: string, body: string, filename?: string, fileContent?: string): Promise<boolean> => {
+    try {
+      const token = await getGmailToken();
+      let raw: string;
+      if (filename && fileContent) {
+        raw = buildGmailMime(to, subject, body, filename, fileContent);
+      } else {
+        const mime = [`To: ${to}`, `Subject: =?UTF-8?B?${utf8ToB64(subject)}?=`, "MIME-Version: 1.0", "Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: base64", "", utf8ToB64(bodyToHtmlRtl(body))].join("\r\n");
+        raw = btoa(mime).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      }
+      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ raw }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        if (err?.error?.status === "UNAUTHENTICATED") gmailTokenRef.current = null;
+        throw new Error(err?.error?.message ?? `שגיאה ${res.status}`);
+      }
+      return true;
+    } catch (e: any) {
+      addToast(`שגיאת Gmail: ${e?.message ?? e}`, "error");
+      return false;
+    }
+  };
+
+  const buildSaleDaySummaryText = (day: SaleDay): string => {
+    const txs = day.transactions ?? [];
+    const sales = txs.filter(t => !t.isReturn);
+    const returns = txs.filter(t => t.isReturn);
+    const totalRevenue = sales.reduce((s, t) => s + t.finalTotal, 0);
+    const totalReturns = Math.abs(returns.reduce((s, t) => s + t.finalTotal, 0));
+    const net = totalRevenue - totalReturns;
+    const inv = (day.inventory ?? []).map(item => {
+      const row = computeInventoryRow(item, txs, day.type === "preorder" ? (day.preOrders ?? []) : undefined);
+      return { name: item.productName, required: row.requiredQty, actualIn: row.actualInQty, sold: row.soldQty, remaining: row.remainingQty, counted: row.actualEndQty };
+    });
+    const invLines = inv.map(i =>
+      `  ${i.name}: נדרש ${i.required} | נכנס ${i.actualIn} | נמכר ${i.sold} | נשאר ${i.remaining}${i.counted != null ? ` | נספר ${i.counted}` : ""}`
+    ).join("\n");
+    return `סיכום יום מכירה — ${day.name}\nתאריך: ${day.date ?? new Date().toLocaleDateString()}\n\nעסקאות: ${sales.length} | החזרות: ${returns.length}\nהכנסות: ₪${totalRevenue.toFixed(2)} | החזרות: ₪${totalReturns.toFixed(2)}\nסה"כ נטו: ₪${net.toFixed(2)}\n\nמלאי:\n${invLines || "  אין נתוני מלאי"}`;
+  };
+
+  const sendSaleDayClosingEmail = async (day: SaleDay) => {
+    // כשGmail API מוגדר — הדיאלוג שולח עם קובץ מצורף, לא כאן
+    if (emailJSConfig.gmailClientId && emailJSConfig.recipientEmail) return;
+    if (!emailJSConfig.publicKey || !emailJSConfig.serviceId) return;
+    const message = buildSaleDaySummaryText(day);
+    const ok = await sendEmailAlert(message, true);
+    if (ok) logActivity(`מייל סיכום נשלח — ${day.name}`);
   };
 
   const showConfirm = (opts: { title: string; message: string; itemName?: string; onConfirm: () => void; confirmLabel?: string; confirmVariant?: BtnVariant }) => {
@@ -1124,6 +1499,21 @@ export default function App() {
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   };
+
+  const workerTotal = (w: WorkerExpense) =>
+    w.paymentType === "manual" ? w.manualAmount : w.workDays.reduce((s, d) => s + d.hours, 0) * w.hourlyRate;
+  const saveExpense = (e: Expense) => {
+    setExpenses(prev => prev.some(x => x.id === e.id) ? prev.map(x => x.id === e.id ? e : x) : [...prev, e]);
+    setExpenseForm(null);
+  };
+  const deleteExpense = (id: number) => showConfirm({ title: "מחיקת הוצאה", message: "האם למחוק הוצאה זו?", confirmLabel: "מחק", confirmVariant: "danger", onConfirm: () => setExpenses(prev => prev.filter(x => x.id !== id)) });
+  const saveWorker = (w: WorkerExpense) => {
+    setWorkerExpenses(prev => prev.some(x => x.id === w.id) ? prev.map(x => x.id === w.id ? w : x) : [...prev, w]);
+    setWorkerForm(null);
+  };
+  const deleteWorker = (id: number) => showConfirm({ title: "מחיקת עובד", message: "האם למחוק רשומה זו?", confirmLabel: "מחק", confirmVariant: "danger", onConfirm: () => setWorkerExpenses(prev => prev.filter(x => x.id !== id)) });
+  const newExpense = (): Expense => ({ id: Date.now(), name: "", description: "", saleDayId: null, date: new Date().toISOString().slice(0, 10), recipient: "", amount: 0, paid: false });
+  const newWorker = (): WorkerExpense => ({ id: Date.now(), workerName: "", saleDayId: null, paid: false, paymentType: "manual", manualAmount: 0, hourlyRate: 0, workDays: [] });
 
   const typeLabel = (type: SaleDay["type"]) =>
     type === "walkin" ? "עם הנחה" : type === "walkin-nodiscount" ? "ללא הנחה" : type === "preorder" ? "הזמנות" : "פתוח";
@@ -1269,9 +1659,12 @@ export default function App() {
   };
 
   const toggleSaleDay = (id: number) => {
-    setSaleDays(prev => prev.map(day => ({
-      ...day,
-      isActive: day.id === id ? !day.isActive : false,
+    const day = saleDays.find(d => d.id === id);
+    const willActivate = !day?.isActive;
+    logActivity(`${willActivate ? "הפעלת" : "השהיית"} יום מכירה — ${day?.name ?? id}`);
+    setSaleDays(prev => prev.map(d => ({
+      ...d,
+      isActive: d.id === id ? !d.isActive : false,
     })));
   };
 
@@ -1346,6 +1739,7 @@ export default function App() {
 
   const savePreOrder = () => {
     if (!preOrderForm || !preOrderForm.customerName) return;
+    const isEdit = !!preOrderForm.orderId;
     setSaleDays(prev => prev.map(day => {
       if (day.id !== preOrderForm.saleDayId) return day;
       if (preOrderForm.orderId) {
@@ -1368,6 +1762,7 @@ export default function App() {
       };
       return { ...day, preOrders: [newOrder, ...day.preOrders] };
     }));
+    logActivity(`${isEdit ? "עריכת" : "יצירת"} הזמנה מראש — ${preOrderForm.customerName}`);
     setPreOrderForm(null);
   };
 
@@ -1677,8 +2072,8 @@ export default function App() {
     const preOrders = activeSaleDay.type === "preorder" ? (activeSaleDay.preOrders ?? []) : undefined;
     const row = computeInventoryRow(inv, txs, preOrders);
     const reserved = row.reservedQty ?? null;
-    const available = row.availableQty ?? null;
     const cartQty = cart.filter(i => i.id === productId).reduce((s, i) => s + i.qty, 0);
+    const available = row.availableQty ?? null;
     return {
       remaining: row.remainingQty - cartQty,
       reserved,
@@ -1686,7 +2081,7 @@ export default function App() {
     };
   };
 
-  const checkCanAddToCart = (productId: number, currentCartQty: number): string | null => {
+  const checkCanAddToCart = (productId: number, currentCartQty: number): { message: string; overridable: boolean } | null => {
     if (!activeSaleDay) return null;
     const inv = (activeSaleDay.inventory ?? []).find(i => i.productId === productId);
     if (!inv) return null;
@@ -1697,15 +2092,21 @@ export default function App() {
       const preOrder = (activeSaleDay.preOrders ?? []).find(o => o.id === activePreOrderRef.orderId);
       const orderedQty = preOrder?.items.find(i => i.id === productId)?.qty ?? 0;
       const row = computeInventoryRow(inv, txs, activeSaleDay.preOrders ?? []);
+      const hasReservations = (row.reservedQty ?? 0) > 0;
       if (orderedQty > 0) {
-        if (row.remainingQty <= currentCartQty) return `אין מלאי מספיק עבור "${productName}"`;
+        if (row.remainingQty <= currentCartQty) return { message: `אין מלאי מספיק עבור "${productName}"`, overridable: false };
+        if (currentCartQty >= orderedQty) {
+          const extraInCart = currentCartQty - orderedQty;
+          if ((row.availableQty ?? 0) <= extraInCart) return { message: `"${productName}" שמור להזמנות — אין מלאי פנוי`, overridable: hasReservations };
+        }
       } else {
-        if ((row.availableQty ?? 0) <= currentCartQty) return `"${productName}" שמור להזמנות — אין מלאי פנוי`;
+        if ((row.availableQty ?? 0) <= currentCartQty) return { message: `"${productName}" שמור להזמנות — אין מלאי פנוי`, overridable: hasReservations };
       }
     } else {
       const row = computeInventoryRow(inv, txs, activeSaleDay.type === "preorder" ? (activeSaleDay.preOrders ?? []) : undefined);
+      const hasReservations = (row.reservedQty ?? 0) > 0;
       const avail = row.availableQty ?? row.remainingQty;
-      if (avail <= currentCartQty) return `אין מלאי זמין עבור "${productName}"`;
+      if (avail <= currentCartQty) return { message: `אין מלאי זמין עבור "${productName}"`, overridable: hasReservations };
     }
     return null;
   };
@@ -1949,6 +2350,59 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  const exportExpensesToXlsx = () => {
+    const dayLabel = (id: number | null) => id == null ? "כללי" : (saleDays.find(d => d.id === id)?.name ?? `#${id}`);
+    const wb = XLSX.utils.book_new();
+
+    // גיליון 1 — הוצאות
+    const expRows = expenses.map(e => ({
+      "שם הוצאה": e.name,
+      "תיאור": e.description,
+      "יום מכירה": dayLabel(e.saleDayId),
+      "תאריך": e.date,
+      "מקבל": e.recipient,
+      "סכום": e.amount,
+      "שולם": e.paid ? "כן" : "לא",
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(expRows), "הוצאות");
+
+    // גיליון 2 — עובדים
+    const workerRows = workerExpenses.map(w => {
+      const totalHours = w.workDays.reduce((s, d) => s + d.hours, 0);
+      const total = workerTotal(w);
+      return {
+        "שם עובד": w.workerName,
+        "יום מכירה": dayLabel(w.saleDayId),
+        "סוג תשלום": w.paymentType === "manual" ? "ידני" : "לפי שעות",
+        "שעות עבודה": w.paymentType === "hourly" ? totalHours : "",
+        "שכר לשעה": w.paymentType === "hourly" ? w.hourlyRate : "",
+        "סכום לתשלום": total,
+        "שולם": w.paid ? "כן" : "לא",
+      };
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(workerRows), "עובדים");
+
+    // גיליון 3 — סיכום לפי יום
+    const allIds = [...new Set([...expenses.map(e => e.saleDayId), ...workerExpenses.map(w => w.saleDayId)])];
+    const summaryRows = allIds.map(sid => {
+      const exps = expenses.filter(e => e.saleDayId === sid);
+      const workers = workerExpenses.filter(w => w.saleDayId === sid);
+      const expTotal = exps.reduce((s, e) => s + e.amount, 0);
+      const wTotal = workers.reduce((s, w) => s + workerTotal(w), 0);
+      const unpaid = exps.filter(e => !e.paid).reduce((s, e) => s + e.amount, 0) + workers.filter(w => !w.paid).reduce((s, w) => s + workerTotal(w), 0);
+      return {
+        "יום מכירה": dayLabel(sid),
+        "הוצאות": expTotal,
+        "עובדים": wTotal,
+        "סה\"כ": expTotal + wTotal,
+        "לא שולם": unpaid,
+      };
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), "סיכום");
+
+    XLSX.writeFile(wb, `הוצאות_${getFileDateStamp()}.xlsx`);
+  };
+
   const exportAnnualInventoryToXlsx = (year: number) => {
     const daysInYear = saleDays.filter(d => getSaleDayYear(d) === year);
     const allProductIds = new Set(daysInYear.flatMap(d => getInventoryForDay(d).map(i => i.productId)));
@@ -1979,6 +2433,10 @@ const exportBackup = () => {
     warehouseItems,
     pendingSales,
     activityLog,
+    emailJSConfig,
+    nedarimConfig,
+    expenses,
+    workerExpenses,
   };
 
   const blob = new Blob(
@@ -2035,6 +2493,10 @@ const importBackup = async (
       if (backup.warehouseItems) setWarehouseItems(backup.warehouseItems as typeof warehouseItems);
       if (backup.pendingSales) setPendingSales(backup.pendingSales as typeof pendingSales);
       if (backup.activityLog) setActivityLog(backup.activityLog as typeof activityLog);
+      if (backup.emailJSConfig) setEmailJSConfig(backup.emailJSConfig as typeof emailJSConfig);
+      if (backup.nedarimConfig) setNedarimConfig(backup.nedarimConfig as typeof nedarimConfig);
+      if (backup.expenses) setExpenses(backup.expenses as typeof expenses);
+      if (backup.workerExpenses) setWorkerExpenses(backup.workerExpenses as typeof workerExpenses);
       logActivity(`שחזור גיבוי — ${file.name}`);
       addToast("הגיבוי שוחזר בהצלחה", "success");
     },
@@ -2067,7 +2529,8 @@ const importBackup = async (
           });
         }
       }
-      const baseWarehouseQty = item.openingQty + item.addedQty + item.adjustmentQty;
+      const entriesQty = (item.entries ?? []).reduce((s, e) => s + e.qty, 0);
+      const baseWarehouseQty = item.openingQty + item.addedQty + entriesQty + item.adjustmentQty;
       const currentQty = baseWarehouseQty - packedTotal + returnedTotal;
       const remainingToPackQty = Math.max(plannedTotal - packedTotal, 0);
       const shortageQty = Math.max(remainingToPackQty - currentQty, 0);
@@ -2095,7 +2558,8 @@ const importBackup = async (
       const supplier = item.supplier?.trim() || "ללא ספק";
       if (!supplierMap.has(supplier)) supplierMap.set(supplier, { supplier, products: [] });
       const entry = supplierMap.get(supplier)!;
-      const receivedQty = item.openingQty + item.addedQty + item.adjustmentQty;
+      const entriesQty2 = (item.entries ?? []).reduce((s, e) => s + e.qty, 0);
+      const receivedQty = item.openingQty + item.addedQty + entriesQty2 + item.adjustmentQty;
       const costPrice = item.costPrice ?? 0;
       const totalCost = receivedQty * costPrice;
       let soldQty = 0, soldAmount = 0;
@@ -2152,8 +2616,10 @@ const importBackup = async (
     };
     if (warehouseEditId != null) {
       setWarehouseItems(prev => prev.map(w => w.id === warehouseEditId ? item : w));
+      logActivity(`עריכת מוצר מחסן — ${code} ${whName.trim()}`);
     } else {
       setWarehouseItems(prev => [...prev, item]);
+      logActivity(`הוספת מוצר מחסן — ${code} ${whName.trim()}`);
     }
     clearWarehouseForm();
   };
@@ -2167,13 +2633,51 @@ const importBackup = async (
   };
 
   const deleteWarehouseItemById = (id: number) => {
+    const item = warehouseItems.find(w => w.id === id);
     showConfirm({
       title: "מחיקת מוצר מחסן",
       message: "למחוק מוצר מחסן זה?",
       confirmLabel: "מחק",
       confirmVariant: "danger",
-      onConfirm: () => setWarehouseItems(prev => prev.filter(w => w.id !== id)),
+      onConfirm: () => {
+        logActivity(`מחיקת מוצר מחסן — ${item?.code ?? ""} ${item?.name ?? ""}`);
+        setWarehouseItems(prev => prev.filter(w => w.id !== id));
+      },
     });
+  };
+
+  const saveWarehouseEntry = () => {
+    if (!whEntryQty || Number(whEntryQty) === 0 || whEntryModalItemId == null) return;
+    const entryItem = warehouseItems.find(w => w.id === whEntryModalItemId);
+    const dt = whEntryDatetime || new Date().toLocaleString("sv-SE").slice(0, 16);
+    const entry: WarehouseEntry = {
+      id: Date.now(),
+      qty: Number(whEntryQty),
+      datetime: dt,
+      notes: whEntryNotes.trim() || undefined,
+    };
+    setWarehouseItems(prev => prev.map(w =>
+      w.id === whEntryModalItemId
+        ? { ...w, entries: [...(w.entries ?? []), entry] }
+        : w
+    ));
+    logActivity(`כניסת מלאי — ${entryItem?.name ?? ""} (${entryItem?.code ?? ""}) כמות ${entry.qty}`);
+    setWhEntryModalItemId(null);
+    setWhEntryQty("");
+    setWhEntryDatetime("");
+    setWhEntryNotes("");
+    addToast("כניסת מלאי נשמרה", "success");
+  };
+
+  const deleteWarehouseEntry = (itemId: number, entryId: number) => {
+    const entryItem = warehouseItems.find(w => w.id === itemId);
+    const entry = (entryItem?.entries ?? []).find(e => e.id === entryId);
+    logActivity(`מחיקת כניסת מלאי — ${entryItem?.name ?? ""} (${entryItem?.code ?? ""}) כמות ${entry?.qty ?? ""}`);
+    setWarehouseItems(prev => prev.map(w =>
+      w.id === itemId
+        ? { ...w, entries: (w.entries ?? []).filter(e => e.id !== entryId) }
+        : w
+    ));
   };
 
   const updateInventoryWarehouseCode = (dayId: number, productId: number, code: string) => {
@@ -2373,6 +2877,44 @@ const importBackup = async (
     fontSize: "16px",
   };
 
+  if (appPassword && !isAuthenticated) {
+    const tryLogin = () => {
+      if (passwordInput === appPassword) {
+        try { sessionStorage.setItem("appAuth", "1"); } catch {}
+        setIsAuthenticated(true);
+        setPasswordInput("");
+        setPasswordError(false);
+      } else {
+        setPasswordError(true);
+        setPasswordInput("");
+      }
+    };
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f1f5f9" }}>
+        <div style={{ background: "white", borderRadius: "24px", padding: "40px 36px", width: "340px", maxWidth: "92vw", boxShadow: "0 20px 60px rgba(0,0,0,0.15)", direction: "rtl", textAlign: "center" }}>
+          <div style={{ fontSize: "48px", marginBottom: "12px" }}>🔒</div>
+          <h2 style={{ margin: "0 0 6px", fontSize: "22px", fontWeight: 800, color: "#111827" }}>מערכת להדר</h2>
+          <p style={{ margin: "0 0 28px", fontSize: "14px", color: "#6b7280" }}>יש להזין סיסמה להמשך</p>
+          <input
+            type="password"
+            placeholder="סיסמה"
+            value={passwordInput}
+            autoFocus
+            onChange={e => { setPasswordInput(e.target.value); setPasswordError(false); }}
+            onKeyDown={e => e.key === "Enter" && tryLogin()}
+            style={{ width: "100%", padding: "13px 16px", borderRadius: "12px", border: `1.5px solid ${passwordError ? "#ef4444" : "#cbd5e1"}`, fontSize: "16px", boxSizing: "border-box", textAlign: "right", marginBottom: "8px", outline: "none" }}
+          />
+          {passwordError && (
+            <div style={{ color: "#dc2626", fontSize: "13px", fontWeight: 600, marginBottom: "8px" }}>סיסמה שגויה, נסה שנית</div>
+          )}
+          <button onClick={tryLogin} style={{ width: "100%", padding: "13px", borderRadius: "12px", background: "#1e3a8a", color: "white", border: "none", fontSize: "16px", fontWeight: 700, cursor: "pointer", marginTop: "4px" }}>
+            כניסה
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <div
@@ -2422,7 +2964,7 @@ const importBackup = async (
         {/* ── ניווט ניהול (מצב מנהל) ── */}
         {!cashierMode && (
           <div style={{ background: "#083f1e", display: "flex", alignItems: "stretch", position: "sticky", top: 0, zIndex: 1000, borderBottom: "3px solid #248f4b", paddingRight: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.15)" }}>
-            {([ ["home","ראשי"], ["sales","מכירות"], ["inventory","מלאי ומחסן"], ["reports","דוחות"], ["settings","הגדרות"] ] as const).map(([key, label]) => (
+            {([ ["home","ראשי"], ["sales","מכירות"], ["inventory","מלאי ומחסן"], ["reports","דוחות"], ["expenses","הוצאות"], ["settings","הגדרות"] ] as const).map(([key, label]) => (
               <button key={key} onClick={() => setAdminTab(key as typeof adminTab)} className="cc-nav-tab"
                 style={navTabBtn(adminTab === key)}>
                 {label}
@@ -2494,7 +3036,7 @@ const importBackup = async (
               </div>
               {activeSaleDay && (
                 <button
-                  onClick={() => setShowNewCustomerModalDayId(activeSaleDay.id)}
+                  onClick={() => { setNewCustomerName(customerSearch.trim()); setShowNewCustomerModalDayId(activeSaleDay.id); }}
                   className="cc-btn" style={btn("primary", "sm")}
                 >
                   + לקוח
@@ -2565,14 +3107,16 @@ const importBackup = async (
               <div style={{ borderTop: "2px solid #e2e8f0", paddingTop: "12px", flexShrink: 0 }}>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <div style={{ position: "relative" }}>
-                    <button onClick={() => setShowMoreActions(v => !v)} className="cc-btn" style={{ ...menuTriggerBtn(), height: "100%", padding: "0 14px" }}>
+                    <button ref={moreActionsRef} onClick={() => setShowMoreActions(v => !v)} className="cc-btn" style={{ ...menuTriggerBtn(), height: "100%", padding: "0 14px" }}>
                       ⋯
                     </button>
-                    {showMoreActions && (
+                    {showMoreActions && (() => {
+                      const rect = moreActionsRef.current?.getBoundingClientRect();
+                      return (
                       <>
                         {/* overlay לסגירה בקליק מחוץ */}
                         <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={() => setShowMoreActions(false)} />
-                        <div style={{ position: "absolute", bottom: "110%", left: 0, background: "white", border: "1px solid #e2e8f0", borderRadius: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "200px", overflow: "hidden" }}>
+                        <div style={{ position: "fixed", bottom: rect ? `${window.innerHeight - rect.top + 4}px` : "80px", right: rect ? `${window.innerWidth - rect.right}px` : "20px", background: "white", border: "1px solid #e2e8f0", borderRadius: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "200px", overflow: "hidden" }}>
                           <button onClick={() => { setShowReturnModal(true); setReturnSearch(""); setReturnSourceId(null); setReturnQtys({}); setShowMoreActions(false); }}
                             className="cc-menu-item" style={menuItemBtn("purple")}>
                             ↩ החזרת מוצר
@@ -2592,12 +3136,13 @@ const importBackup = async (
                           </button>
                         </div>
                       </>
-                    )}
+                      );
+                    })()}
                   </div>
                   <button onClick={savePendingSale} className="cc-btn" style={{ ...btn("warning", "lg"), flex: 1 }}>
                     ⏸ שמור בהמתנה
                   </button>
-                  <button onClick={() => { if (cart.length > 0) { setShowPaymentModal(true); setPaymentModalError(""); } }} disabled={cart.length === 0}
+                  <button onClick={() => { if (cart.length > 0) { setShowPaymentModal(true); setPaymentModalError(""); setModalPayments([]); setModalPaymentAmount(""); setCashReceived(""); } }} disabled={cart.length === 0}
                     className="cc-btn" style={{ ...btn("primary", "lg"), flex: 2, padding: "13px" }}>
                     💳 מעבר לתשלום
                   </button>
@@ -2772,7 +3317,7 @@ const importBackup = async (
                         <option value="preorder">הזמנות</option>
                         <option value="open">פתוח</option>
                       </select>
-                      <button onClick={() => setAdminTab("sales")} className="cc-btn" style={btn("primary", "sm")}>+ יום מכירה חדש</button>
+
                     </div>
                   </div>
                   {homeFiltered.length === 0 ? (
@@ -2784,9 +3329,9 @@ const importBackup = async (
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px", direction: "rtl" }}>
                           <thead>
                             <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>
-                              <th style={{ padding: "10px 14px", textAlign: "right", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>שם המכירה</th>
-                              <th style={{ padding: "10px 14px", textAlign: "right", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>תאריך</th>
-                              <th style={{ padding: "10px 14px", textAlign: "right", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>סוג</th>
+                              <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>שם המכירה</th>
+                              <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>תאריך</th>
+                              <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>סוג</th>
                               <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>מצב</th>
                               <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>עסקאות</th>
                               <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#374151", whiteSpace: "nowrap" }}>סכום נטו</th>
@@ -3115,6 +3660,7 @@ const importBackup = async (
                                             <input placeholder="רמות: 5,10,15" value={editingPriceLevels} onChange={e => setEditingPriceLevels(e.target.value)} style={{ ...inputStyle, flex: "1 1 90px", padding: "6px 8px", fontSize: "13px" }} />
                                             <button onClick={() => setEditingGiftTrigger(v => !v)} className="cc-btn" style={toggleBtn(editingGiftTrigger, "sm")} title="מוצר מזכה">🎁</button>
                                             <button onClick={() => setEditingIsGiftBag(v => !v)} className="cc-btn" style={toggleBtn(editingIsGiftBag, "sm")} title="שקית יוקרתית">👜</button>
+                                            <button onClick={cancelEditProduct} className="cc-btn" style={btn("secondary", "sm")}>ביטול</button>
                                             <button onClick={() => {
                                               if (editingProductId === null || !editingName || !editingPrice || !editingCategory) return;
                                               const parsedLevels = editingPriceLevels.split(/[,\s]+/).map(s => Number(s.trim())).filter(n => n > 0);
@@ -3125,7 +3671,6 @@ const importBackup = async (
                                                 : p));
                                               cancelEditProduct();
                                             }} className="cc-btn" style={btn("primary", "sm")}>שמור</button>
-                                            <button onClick={cancelEditProduct} className="cc-btn" style={btn("secondary", "sm")}>ביטול</button>
                                           </div>
                                         </td>
                                       </tr>
@@ -3438,8 +3983,8 @@ const importBackup = async (
                                                     <option value="1">25%</option><option value="2">15%</option><option value="3">ללא הנחה</option>
                                                   </select>
                                                 )}
-                                                <button onClick={() => saveEditedCustomerForDay(detailDay.id)} className="cc-btn" style={btn("primary", "sm")}>שמור</button>
                                                 <button onClick={cancelEditCustomer} className="cc-btn" style={btn("secondary", "sm")}>ביטול</button>
+                                                <button onClick={() => saveEditedCustomerForDay(detailDay.id)} className="cc-btn" style={btn("primary", "sm")}>שמור</button>
                                               </div>
                                             </td>
                                           </tr>
@@ -3565,7 +4110,7 @@ const importBackup = async (
                                         title: "איפוס עסקאות",
                                         message: `למחוק את כל ${allTxs.length} העסקאות של "${detailDay.name}"? פעולה זו אינה הפיכה.`,
                                         itemName: detailDay.name, confirmLabel: "מחק הכל", confirmVariant: "danger",
-                                        onConfirm: () => setSaleDays(prev => prev.map(d => d.id === detailDay.id ? { ...d, transactions: [] } : d)),
+                                        onConfirm: () => { logActivity(`איפוס עסקאות — ${detailDay.name} (${allTxs.length} עסקאות)`); setSaleDays(prev => prev.map(d => d.id === detailDay.id ? { ...d, transactions: [] } : d)); },
                                       });
                                     }} className="cc-menu-item danger" style={menuItemBtn("danger")}>🗑 איפוס עסקאות</button>
                                   </div>
@@ -3604,7 +4149,7 @@ const importBackup = async (
                                           <td style={{ ...tdS, textAlign: "center" as const, fontWeight: 700, color: tx.isReturn ? "#dc2626" : "#16a34a" }}>{formatCurrency(tx.finalTotal)}</td>
                                           <td style={{ ...tdS, textAlign: "center" as const }}>
                                             <span style={{ fontSize: "12px", fontWeight: 600, background: tx.isReturn ? "#fee2e2" : "#e0f2fe", color: tx.isReturn ? "#dc2626" : "#0891b2", borderRadius: "8px", padding: "2px 8px" }}>
-                                              {tx.isReturn ? "↩ החזרה" : ({ cash: "מזומן", check: "המחאה", credit: "אשראי" }[tx.paymentMethod ?? ""] ?? tx.paymentMethod ?? "")}
+                                              {tx.isReturn ? "↩ החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : "אשראי").join(" + ") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי" }[tx.paymentMethod ?? ""] ?? tx.paymentMethod ?? "")}
                                             </span>
                                           </td>
                                           <td style={{ ...tdS, textAlign: "center" as const, fontSize: "12px", color: "#64748b" }}>{fmtDate(tx)}</td>
@@ -3649,7 +4194,7 @@ const importBackup = async (
                                       <span>{tx.customerPhone || "—"}</span>
                                       <span>{tx.seller}</span>
                                       <span style={{ background: tx.isReturn ? "#fee2e2" : "#e0f2fe", color: tx.isReturn ? "#dc2626" : "#0891b2", borderRadius: "6px", padding: "1px 6px", fontWeight: 600 }}>
-                                        {tx.isReturn ? "החזרה" : ({ cash: "מזומן", check: "המחאה", credit: "אשראי" }[tx.paymentMethod ?? ""] ?? "")}
+                                        {tx.isReturn ? "החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : "אשראי").join("+") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי" }[tx.paymentMethod ?? ""] ?? "")}
                                       </span>
                                       <span>{fmtDate(tx)}</span>
                                     </div>
@@ -3693,7 +4238,14 @@ const importBackup = async (
                         const totalItems = sales.reduce((s, t) => s + t.items.reduce((ss, i) => ss + i.qty, 0), 0);
                         const listCount = detailDay.type === "preorder" ? (detailDay.preOrders ?? []).length : (detailDay.customers ?? []).length;
                         const byMethod: Record<string, number> = {};
-                        sales.forEach(t => { const m = t.paymentMethod ?? ""; byMethod[m] = (byMethod[m] ?? 0) + t.finalTotal; });
+                        sales.forEach(t => {
+                          if (t.splitPayment?.payments?.length) {
+                            t.splitPayment.payments.forEach(p => { byMethod[p.method] = (byMethod[p.method] ?? 0) + p.amount; });
+                          } else {
+                            const m = t.paymentMethod ?? "";
+                            byMethod[m] = (byMethod[m] ?? 0) + t.finalTotal;
+                          }
+                        });
                         const methodLabel = (m: string) => ({ cash: "מזומן", check: "המחאה", credit: "אשראי" }[m] ?? (m || "לא ידוע"));
                         const summaryItems: { label: string; value: string; color?: string }[] = [
                           { label: "עסקאות", value: formatTransactionCount(sales.length), color: "#1e40af" },
@@ -3778,12 +4330,407 @@ const importBackup = async (
 
 
 
+        {/* ══ מסך הוצאות ══ */}
+        {!cashierMode && adminTab === "expenses" && (() => {
+          const card: React.CSSProperties = { background: "white", borderRadius: "16px", padding: "20px", boxShadow: "0 2px 8px rgba(0,0,0,0.07)" };
+          const thS: React.CSSProperties = { padding: "10px 12px", textAlign: "center", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", whiteSpace: "nowrap" };
+          const tdS: React.CSSProperties = { padding: "8px 12px", fontSize: "13px", borderBottom: "1px solid #f1f5f9", verticalAlign: "middle" };
+
+          const dayLabel = (id: number | null) => id == null ? "כללי" : (saleDays.find(d => d.id === id)?.name ?? `#${id}`);
+
+
+          // ── summary numbers ──
+          const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+          const unpaidExpenses = expenses.filter(e => !e.paid).reduce((s, e) => s + e.amount, 0);
+          const totalWorkers = workerExpenses.reduce((s, w) => s + workerTotal(w), 0);
+          const unpaidWorkers = workerExpenses.filter(w => !w.paid).reduce((s, w) => s + workerTotal(w), 0);
+          const grandTotal = totalExpenses + totalWorkers;
+
+          return (
+            <div style={{ direction: "rtl", display: "flex", flexDirection: "column", gap: "20px" }}>
+              {/* כותרת + sub-tabs */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+                <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 700 }}>💸 הוצאות</h2>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: "6px", background: "#f1f5f9", borderRadius: "10px", padding: "4px" }}>
+                    {([["expenses","הוצאות"],["workers","עובדים"],["summary","סיכום"]] as const).map(([key, label]) => (
+                      <button key={key} onClick={() => setExpensesTab(key)} className="cc-btn"
+                        style={{ padding: "7px 18px", borderRadius: "7px", border: "none", fontWeight: 700, fontSize: "13px", background: expensesTab === key ? "white" : "transparent", color: expensesTab === key ? "#1e3a5f" : "#6b7280", boxShadow: expensesTab === key ? "0 1px 4px rgba(0,0,0,0.12)" : "none", cursor: "pointer" }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* ══ טאב: הוצאות כלליות ══ */}
+              {expensesTab === "expenses" && (
+                <div style={card}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                    <h3 style={{ margin: 0, fontSize: "16px" }}>רשימת הוצאות</h3>
+                    <button onClick={() => setExpenseForm(newExpense())} className="cc-btn" style={btn("primary")}>+ הוסף הוצאה</button>
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          {["שם הוצאה","תיאור","יום מכירה","תאריך","מקבל","סכום","שולם",""].map(h => <th key={h} style={thS}>{h}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {expenses.length === 0 && <tr><td colSpan={8} style={{ ...tdS, textAlign: "center", color: "#9ca3af", padding: "24px" }}>אין הוצאות רשומות</td></tr>}
+                        {expenses.map(e => (
+                          <tr key={e.id}>
+                            <td style={{ ...tdS, fontWeight: 600 }}>{e.name}</td>
+                            <td style={{ ...tdS, color: "#6b7280", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.description}</td>
+                            <td style={{ ...tdS, whiteSpace: "nowrap" }}>{dayLabel(e.saleDayId)}</td>
+                            <td style={{ ...tdS, whiteSpace: "nowrap" }}>{e.date}</td>
+                            <td style={tdS}>{e.recipient}</td>
+                            <td style={{ ...tdS, fontWeight: 700, color: "#dc2626" }}>₪{e.amount.toFixed(2)}</td>
+                            <td style={{ ...tdS, textAlign: "center" }}>
+                              <button onClick={() => setExpenses(prev => prev.map(x => x.id === e.id ? { ...x, paid: !x.paid } : x))} className="cc-btn"
+                                style={{ padding: "3px 10px", fontSize: "12px", borderRadius: "6px", border: "1px solid", borderColor: e.paid ? "#86efac" : "#fca5a5", background: e.paid ? "#f0fdf4" : "#fff1f1", color: e.paid ? "#16a34a" : "#dc2626", cursor: "pointer", fontWeight: 700 }}>
+                                {e.paid ? "✓ שולם" : "✗ לא שולם"}
+                              </button>
+                            </td>
+                            <td style={{ ...tdS, whiteSpace: "nowrap" }}>
+                              <button onClick={() => setExpenseForm({ ...e })} className="cc-btn" style={{ ...btn("ghost", "sm"), marginLeft: "4px" }}>ערוך</button>
+                              <button onClick={() => deleteExpense(e.id)} className="cc-btn" style={btn("dangerGhost", "sm")}>מחק</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* ══ טאב: עובדים ══ */}
+              {expensesTab === "workers" && (
+                <div style={card}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                    <h3 style={{ margin: 0, fontSize: "16px" }}>הוצאות עובדים</h3>
+                    <button onClick={() => setWorkerForm(newWorker())} className="cc-btn" style={btn("primary")}>+ הוסף עובד</button>
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          {["שם עובד","יום מכירה","סוג תשלום","שעות","₪/שעה","סכום","שולם",""].map(h => <th key={h} style={thS}>{h}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {workerExpenses.length === 0 && <tr><td colSpan={8} style={{ ...tdS, textAlign: "center", color: "#9ca3af", padding: "24px" }}>אין רשומות עובדים</td></tr>}
+                        {workerExpenses.map(w => {
+                          const total = workerTotal(w);
+                          const totalHours = w.workDays.reduce((s, d) => s + d.hours, 0);
+                          return (
+                            <tr key={w.id}>
+                              <td style={{ ...tdS, fontWeight: 600 }}>{w.workerName}</td>
+                              <td style={{ ...tdS, whiteSpace: "nowrap" }}>{dayLabel(w.saleDayId)}</td>
+                              <td style={{ ...tdS, fontSize: "12px" }}>{w.paymentType === "manual" ? "ידני" : "לפי שעות"}</td>
+                              <td style={{ ...tdS, textAlign: "center" }}>
+                                {w.paymentType === "hourly" ? (
+                                  <button onClick={() => setWorkerForm({ ...w, workDays: [...w.workDays] })} className="cc-btn"
+                                    style={{ padding: "2px 8px", fontSize: "12px", borderRadius: "5px", border: "1px solid #c7d2fe", background: "#eef2ff", color: "#4338ca", cursor: "pointer" }}>
+                                    {totalHours}ש' ({w.workDays.length} ימים)
+                                  </button>
+                                ) : "—"}
+                              </td>
+                              <td style={{ ...tdS, textAlign: "center" }}>{w.paymentType === "hourly" ? `₪${w.hourlyRate}` : "—"}</td>
+                              <td style={{ ...tdS, fontWeight: 700, color: "#7c3aed" }}>₪{total.toFixed(2)}</td>
+                              <td style={{ ...tdS, textAlign: "center" }}>
+                                <button onClick={() => setWorkerExpenses(prev => prev.map(x => x.id === w.id ? { ...x, paid: !x.paid } : x))} className="cc-btn"
+                                  style={{ padding: "3px 10px", fontSize: "12px", borderRadius: "6px", border: "1px solid", borderColor: w.paid ? "#86efac" : "#fca5a5", background: w.paid ? "#f0fdf4" : "#fff1f1", color: w.paid ? "#16a34a" : "#dc2626", cursor: "pointer", fontWeight: 700 }}>
+                                  {w.paid ? "✓ שולם" : "✗ לא שולם"}
+                                </button>
+                              </td>
+                              <td style={{ ...tdS, whiteSpace: "nowrap" }}>
+                                <button onClick={() => setWorkerForm({ ...w, workDays: [...w.workDays] })} className="cc-btn" style={{ ...btn("ghost", "sm"), marginLeft: "4px" }}>ערוך</button>
+                                <button onClick={() => deleteWorker(w.id)} className="cc-btn" style={btn("dangerGhost", "sm")}>מחק</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* ══ טאב: סיכום ══ */}
+              {expensesTab === "summary" && (() => {
+                const allSaleDayIds = [...new Set([...expenses.map(e => e.saleDayId), ...workerExpenses.map(w => w.saleDayId)])];
+                const activeKey = allSaleDayIds.some(sid => String(sid) === expensesSummaryDayKey)
+                  ? expensesSummaryDayKey
+                  : allSaleDayIds.length > 0 ? String(allSaleDayIds[0]) : "null";
+                const activeSidObj = activeKey === "null" ? null : Number(activeKey);
+                const activeExps = expenses.filter(e => e.saleDayId === activeSidObj);
+                const activeWorkers = workerExpenses.filter(w => w.saleDayId === activeSidObj);
+                const activeExpTotal = activeExps.reduce((s, e) => s + e.amount, 0);
+                const activeWorkerTotal = activeWorkers.reduce((s, w) => s + workerTotal(w), 0);
+                const activeUnpaid = activeExps.filter(e => !e.paid).reduce((s, e) => s + e.amount, 0)
+                  + activeWorkers.filter(w => !w.paid).reduce((s, w) => s + workerTotal(w), 0);
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "12px" }}>
+                      {[
+                        { label: "סה\"כ הוצאות", value: `₪${totalExpenses.toFixed(2)}`, color: "#dc2626" },
+                        { label: "לא שולם (הוצאות)", value: `₪${unpaidExpenses.toFixed(2)}`, color: "#f59e0b" },
+                        { label: "סה\"כ עובדים", value: `₪${totalWorkers.toFixed(2)}`, color: "#7c3aed" },
+                        { label: "לא שולם (עובדים)", value: `₪${unpaidWorkers.toFixed(2)}`, color: "#f59e0b" },
+                        { label: "סה\"כ כולל", value: `₪${grandTotal.toFixed(2)}`, color: "#0891b2" },
+                      ].map(c => (
+                        <div key={c.label} style={{ ...card, textAlign: "center" }}>
+                          <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "4px" }}>{c.label}</div>
+                          <div style={{ fontSize: "18px", fontWeight: 700, color: c.color }}>{c.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {allSaleDayIds.length === 0
+                      ? <div style={{ ...card, textAlign: "center", color: "#9ca3af" }}>אין נתוני הוצאות עדיין</div>
+                      : <>
+                          {/* טאבי ימי מכירה */}
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", borderBottom: "2px solid #e5e7eb", paddingBottom: "6px", alignItems: "flex-end" }}>
+                            {allSaleDayIds.map(sid => {
+                              const key = String(sid);
+                              const isActive = key === activeKey;
+                              return (
+                                <button
+                                  key={key}
+                                  onClick={() => setExpensesSummaryDayKey(key)}
+                                  style={{
+                                    padding: "6px 14px", borderRadius: "8px 8px 0 0", border: "none", cursor: "pointer",
+                                    fontSize: "13px", fontWeight: isActive ? 700 : 400,
+                                    background: isActive ? "#0891b2" : "#f1f5f9",
+                                    color: isActive ? "#fff" : "#374151",
+                                    borderBottom: isActive ? "2px solid #0891b2" : "2px solid transparent",
+                                    marginBottom: "-2px",
+                                  }}
+                                >
+                                  {dayLabel(sid)}
+                                </button>
+                              );
+                            })}
+                            <button onClick={exportExpensesToXlsx} className="cc-btn" style={{ ...btn("success", "sm"), marginRight: "auto", marginBottom: "2px" }} disabled={expenses.length === 0 && workerExpenses.length === 0}>
+                              ייצא לאקסל
+                            </button>
+                          </div>
+                          {/* פאנל יום נבחר */}
+                          <div style={card}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700 }}>{dayLabel(activeSidObj)}</h3>
+                              <div style={{ display: "flex", gap: "12px", fontSize: "13px" }}>
+                                <span style={{ color: "#dc2626" }}>הוצאות: ₪{activeExpTotal.toFixed(2)}</span>
+                                <span style={{ color: "#7c3aed" }}>עובדים: ₪{activeWorkerTotal.toFixed(2)}</span>
+                                <span style={{ fontWeight: 700, color: "#0891b2" }}>סה"כ: ₪{(activeExpTotal + activeWorkerTotal).toFixed(2)}</span>
+                                {activeUnpaid > 0 && <span style={{ color: "#f59e0b", fontWeight: 700 }}>⚠ לא שולם: ₪{activeUnpaid.toFixed(2)}</span>}
+                              </div>
+                            </div>
+                            {activeExps.length > 0 && (
+                              <div style={{ marginBottom: "8px" }}>
+                                <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "4px" }}>הוצאות:</div>
+                                {activeExps.map(e => (
+                                  <div key={e.id} style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", padding: "3px 0", borderBottom: "1px solid #f1f5f9" }}>
+                                    <span>{e.name}{e.recipient ? ` — ${e.recipient}` : ""}</span>
+                                    <span style={{ fontWeight: 600, color: e.paid ? "#16a34a" : "#dc2626" }}>₪{e.amount.toFixed(2)} {e.paid ? "✓" : "✗"}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {activeWorkers.length > 0 && (
+                              <div>
+                                <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "4px" }}>עובדים:</div>
+                                {activeWorkers.map(w => (
+                                  <div key={w.id} style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", padding: "3px 0", borderBottom: "1px solid #f1f5f9" }}>
+                                    <span>{w.workerName}{w.paymentType === "hourly" ? ` (${w.workDays.reduce((s, d) => s + d.hours, 0)}ש' × ₪${w.hourlyRate})` : ""}</span>
+                                    <span style={{ fontWeight: 600, color: w.paid ? "#16a34a" : "#7c3aed" }}>₪{workerTotal(w).toFixed(2)} {w.paid ? "✓" : "✗"}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {activeExps.length === 0 && activeWorkers.length === 0 && (
+                              <div style={{ textAlign: "center", color: "#9ca3af", padding: "16px 0" }}>אין רשומות ליום זה</div>
+                            )}
+                          </div>
+                        </>
+                    }
+                  </div>
+                );
+              })()}
+            </div>
+          );
+        })()}
+
+        {/* ══ טופס עריכת הוצאה ══ */}
+        {expenseForm && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10020, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setExpenseForm(null)}>
+            <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "480px", maxWidth: "95%", direction: "rtl", boxShadow: "0 16px 40px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" }}
+              onClick={e => e.stopPropagation()}>
+              <h3 style={{ margin: "0 0 20px", fontSize: "17px" }}>{expenses.some(x => x.id === expenseForm.id) ? "עריכת הוצאה" : "הוספת הוצאה"}</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                  <div>
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>שם הוצאה *</label>
+                    <input style={inputStyle} value={expenseForm.name} onChange={e => setExpenseForm(p => p && ({ ...p, name: e.target.value }))} placeholder="שם ההוצאה" />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>מקבל ההוצאה</label>
+                    <input style={inputStyle} value={expenseForm.recipient} onChange={e => setExpenseForm(p => p && ({ ...p, recipient: e.target.value }))} placeholder="שם ספק / בית עסק" />
+                  </div>
+                </div>
+                <div>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>תיאור</label>
+                  <input style={inputStyle} value={expenseForm.description} onChange={e => setExpenseForm(p => p && ({ ...p, description: e.target.value }))} placeholder="תיאור קצר" />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                  <div>
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>יום מכירה</label>
+                    <select style={inputStyle} value={expenseForm.saleDayId ?? ""} onChange={e => setExpenseForm(p => p && ({ ...p, saleDayId: e.target.value === "" ? null : Number(e.target.value) }))}>
+                      <option value="">כללי (לא משויך)</option>
+                      {saleDays.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>תאריך</label>
+                    <input type="date" style={inputStyle} value={expenseForm.date} onChange={e => setExpenseForm(p => p && ({ ...p, date: e.target.value }))} />
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                  <div>
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>סכום (₪) *</label>
+                    <input type="number" min={0} step={0.01} style={inputStyle} value={expenseForm.amount || ""} onChange={e => setExpenseForm(p => p && ({ ...p, amount: Number(e.target.value) }))} placeholder="0.00" />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: "2px" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "14px" }}>
+                      <input type="checkbox" checked={expenseForm.paid} onChange={e => setExpenseForm(p => p && ({ ...p, paid: e.target.checked }))} style={{ width: "18px", height: "18px", cursor: "pointer" }} />
+                      ההוצאה שולמה
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
+                <button onClick={() => setExpenseForm(null)} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>ביטול</button>
+                <button onClick={() => { if (!expenseForm.name || expenseForm.amount <= 0) { addToast("יש למלא שם וסכום", "error"); return; } saveExpense(expenseForm); }} className="cc-btn" style={{ ...btn("primary"), flex: 2 }}>שמור הוצאה</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══ טופס עריכת עובד ══ */}
+        {workerForm && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10020, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setWorkerForm(null)}>
+            <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "520px", maxWidth: "95%", direction: "rtl", boxShadow: "0 16px 40px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" }}
+              onClick={e => e.stopPropagation()}>
+              <h3 style={{ margin: "0 0 20px", fontSize: "17px" }}>{workerExpenses.some(x => x.id === workerForm.id) ? "עריכת עובד" : "הוספת עובד"}</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                  <div>
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>שם עובד *</label>
+                    <input style={inputStyle} value={workerForm.workerName} onChange={e => setWorkerForm(p => p && ({ ...p, workerName: e.target.value }))} placeholder="שם מלא" />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>יום מכירה</label>
+                    <select style={inputStyle} value={workerForm.saleDayId ?? ""} onChange={e => setWorkerForm(p => p && ({ ...p, saleDayId: e.target.value === "" ? null : Number(e.target.value) }))}>
+                      <option value="">כללי</option>
+                      {saleDays.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {/* סוג תשלום */}
+                <div>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "8px" }}>סוג תשלום</label>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    {([["manual","סכום ידני"],["hourly","לפי שעות"]] as const).map(([type, label]) => (
+                      <button key={type} onClick={() => setWorkerForm(p => p && ({ ...p, paymentType: type }))} className="cc-btn"
+                        style={{ ...btn(workerForm.paymentType === type ? "primary" : "secondary"), flex: 1 }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {workerForm.paymentType === "manual" ? (
+                  <div>
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>סכום לתשלום (₪)</label>
+                    <input type="number" min={0} step={0.01} style={inputStyle} value={workerForm.manualAmount || ""} onChange={e => setWorkerForm(p => p && ({ ...p, manualAmount: Number(e.target.value) }))} placeholder="0.00" />
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                    <div>
+                      <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>מחיר לשעת עבודה (₪)</label>
+                      <input type="number" min={0} step={0.5} style={{ ...inputStyle, width: "150px" }} value={workerForm.hourlyRate || ""} onChange={e => setWorkerForm(p => p && ({ ...p, hourlyRate: Number(e.target.value) }))} placeholder="0" />
+                    </div>
+                    {/* רישום ימי עבודה */}
+                    <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px" }}>
+                      <div style={{ fontWeight: 700, fontSize: "13px", color: "#374151", marginBottom: "10px" }}>ימי עבודה</div>
+                      <div style={{ display: "flex", gap: "8px", marginBottom: "10px", flexWrap: "wrap" }}>
+                        <input type="date" style={{ ...inputStyle, flex: 1, minWidth: "130px" }} value={workerNewDay.date} onChange={e => setWorkerNewDay(p => ({ ...p, date: e.target.value }))} />
+                        <input type="number" min={0} step={0.5} style={{ ...inputStyle, width: "80px" }} value={workerNewDay.hours} onChange={e => setWorkerNewDay(p => ({ ...p, hours: e.target.value }))} placeholder="שעות" />
+                        <button onClick={() => {
+                          const h = Number(workerNewDay.hours);
+                          if (!workerNewDay.date || h <= 0) return;
+                          setWorkerForm(p => p && ({ ...p, workDays: [...p.workDays.filter(d => d.date !== workerNewDay.date), { date: workerNewDay.date, hours: h }].sort((a, b) => a.date.localeCompare(b.date)) }));
+                          setWorkerNewDay(p => ({ ...p, hours: "" }));
+                        }} className="cc-btn" style={btn("primary")}>+ הוסף</button>
+                      </div>
+                      {workerForm.workDays.length > 0 && (
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                          <thead><tr>
+                            <th style={{ textAlign: "right", padding: "4px 8px", color: "#6b7280", fontWeight: 600 }}>תאריך</th>
+                            <th style={{ textAlign: "center", padding: "4px 8px", color: "#6b7280", fontWeight: 600 }}>שעות</th>
+                            <th style={{ textAlign: "center", padding: "4px 8px", color: "#6b7280", fontWeight: 600 }}>סכום</th>
+                            <th></th>
+                          </tr></thead>
+                          <tbody>
+                            {workerForm.workDays.map(d => (
+                              <tr key={d.date} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                                <td style={{ padding: "4px 8px" }}>{d.date}</td>
+                                <td style={{ padding: "4px 8px", textAlign: "center" }}>{d.hours}</td>
+                                <td style={{ padding: "4px 8px", textAlign: "center", color: "#7c3aed", fontWeight: 600 }}>₪{(d.hours * workerForm.hourlyRate).toFixed(2)}</td>
+                                <td style={{ padding: "4px 8px" }}>
+                                  <button onClick={() => setWorkerForm(p => p && ({ ...p, workDays: p.workDays.filter(x => x.date !== d.date) }))} className="cc-btn" style={btn("dangerGhost", "sm")}>✕</button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot><tr style={{ background: "#f1f5f9" }}>
+                            <td style={{ padding: "5px 8px", fontWeight: 700 }}>סה"כ</td>
+                            <td style={{ padding: "5px 8px", textAlign: "center", fontWeight: 700 }}>{workerForm.workDays.reduce((s, d) => s + d.hours, 0)}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "center", fontWeight: 700, color: "#7c3aed" }}>₪{(workerForm.workDays.reduce((s, d) => s + d.hours, 0) * workerForm.hourlyRate).toFixed(2)}</td>
+                            <td></td>
+                          </tr></tfoot>
+                        </table>
+                      )}
+                    </div>
+                    <div style={{ fontSize: "14px", fontWeight: 700, color: "#7c3aed" }}>
+                      סכום לתשלום: ₪{(workerForm.workDays.reduce((s, d) => s + d.hours, 0) * workerForm.hourlyRate).toFixed(2)}
+                    </div>
+                  </div>
+                )}
+                <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "14px" }}>
+                  <input type="checkbox" checked={workerForm.paid} onChange={e => setWorkerForm(p => p && ({ ...p, paid: e.target.checked }))} style={{ width: "18px", height: "18px", cursor: "pointer" }} />
+                  העובד קיבל את הכסף
+                </label>
+              </div>
+              <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
+                <button onClick={() => setWorkerForm(null)} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>ביטול</button>
+                <button onClick={() => { if (!workerForm.workerName) { addToast("יש למלא שם עובד", "error"); return; } saveWorker(workerForm); }} className="cc-btn" style={{ ...btn("primary"), flex: 2 }}>שמור</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {!cashierMode && adminTab === "settings" && (() => {
           const settingsTabDescriptions: Record<string, string> = {
             sellers: "ניהול רשימת המוכרים ותפקידיהם.",
             backup: "הורדת גיבוי של כל הנתונים ושחזור מקובץ גיבוי קיים.",
             integrity: "בדיקת עסקאות ממתינות ללא שיוך ליום מכירה.",
             log: "מעקב אחר פעולות שבוצעו במערכת.",
+            alerts: "הגדרת שליחת מייל אוטומטי על מלאי נמוך דרך EmailJS.",
+            payment: "הגדרות חיבור לשירות סליקת האשראי נדרים פלוס.",
+            security: "הגדרת סיסמת כניסה לאפליקציה.",
           };
           const orphans = pendingSales.filter(s => !s.saleDayId);
           const logEntries = activityLog.filter(e => {
@@ -3792,7 +4739,8 @@ const importBackup = async (
             if (logDateFilter && !e.date.startsWith(logDateFilter)) return false;
             return true;
           });
-          const thLog: React.CSSProperties = { padding: "8px 12px", textAlign: "right" as const, background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky" as const, top: 0, zIndex: 1, fontWeight: 700, fontSize: "13px", color: "#374151", whiteSpace: "nowrap" as const };
+          const thLog: React.CSSProperties = { padding: "8px 12px", textAlign: "center" as const, background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky" as const, top: 0, zIndex: 1, fontWeight: 700, fontSize: "13px", color: "#374151", whiteSpace: "nowrap" as const };
+          const usage = getStorageUsage();
           return (
           <div style={{ background: "white", borderRadius: "20px", overflow: "hidden" }}>
             {/* כותרת + תיאור */}
@@ -3802,7 +4750,7 @@ const importBackup = async (
                 <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>{settingsTabDescriptions[settingsTab]}</p>
               </div>
               <div style={{ display: "flex", direction: "rtl" }}>
-                {([["sellers","מוכרים"],["backup","גיבוי ושחזור"],["integrity","תקינות נתונים"],["log","יומן פעילות"]] as const).map(([key, label]) => (
+                {([["sellers","מוכרים"],["backup","גיבוי ושחזור"],["integrity","תקינות נתונים"],["log","יומן פעילות"],["alerts","התראות מייל"],["payment","סליקת אשראי"],["security","אבטחה"]] as const).map(([key, label]) => (
                   <button key={key} onClick={() => setSettingsTab(key)} className="cc-underline-tab"
                     style={underlineTabBtn(settingsTab === key)}>
                     {label}{key === "integrity" && orphans.length > 0 ? ` (${orphans.length})` : ""}
@@ -3872,6 +4820,7 @@ const importBackup = async (
                             </div>
                             {editingSeller === seller.name ? (
                               <>
+                                <button onClick={() => setEditingSeller(null)} className="cc-btn" style={btn("secondary", "sm")}>ביטול</button>
                                 <button onClick={() => {
                                   const trimmed = editSellerName.trim();
                                   if (trimmed && trimmed !== seller.name && !sellers.find(s => s.name === trimmed)) {
@@ -3880,7 +4829,6 @@ const importBackup = async (
                                   }
                                   setEditingSeller(null);
                                 }} className="cc-btn" style={btn("primary", "sm")}>שמור</button>
-                                <button onClick={() => setEditingSeller(null)} className="cc-btn" style={btn("secondary", "sm")}>ביטול</button>
                               </>
                             ) : (
                               <>
@@ -3910,27 +4858,66 @@ const importBackup = async (
               )}
 
               {/* ── גיבוי ושחזור ── */}
-              {settingsTab === "backup" && (
-                <div style={{ direction: "rtl" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "16px" }}>
-                    {/* כרטיס גיבוי */}
-                    <div style={{ background: "#f8fafc", borderRadius: "14px", padding: "20px", border: "1px solid #e2e8f0" }}>
-                      <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: "#111827" }}>הורדת גיבוי</h4>
-                      <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280", lineHeight: 1.5 }}>מוריד קובץ JSON המכיל את כל הנתונים: ימי מכירה, לקוחות, עסקאות, מחסן, מוכרים ועוד.</p>
-                      <button onClick={() => { exportBackup(); addToast("הגיבוי הורד בהצלחה", "success"); }} className="cc-btn" style={btn("primary")}>↓ הורד גיבוי מלא</button>
+              {settingsTab === "backup" && (() => {
+                const barColor = usage.percent >= 80 ? "#dc2626" : usage.percent >= 60 ? "#d97706" : "#16a34a";
+                const bgBorder = usage.percent >= 80
+                  ? { bg: "#fef2f2", border: "#fca5a5" }
+                  : usage.percent >= 60
+                  ? { bg: "#fffbeb", border: "#fde68a" }
+                  : { bg: "#f0fdf4", border: "#bbf7d0" };
+                return (
+                  <div style={{ direction: "rtl" }}>
+                    {/* כרטיס שימוש באחסון */}
+                    <div style={{ background: bgBorder.bg, borderRadius: "14px", padding: "18px 20px", border: `1px solid ${bgBorder.border}`, marginBottom: "16px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "6px" }}>
+                        <span style={{ fontSize: "15px", fontWeight: 700, color: "#374151" }}>שימוש באחסון מקומי</span>
+                        <span style={{ fontSize: "14px", fontWeight: 700, color: barColor }}>{usage.mb} MB מתוך ~5 MB ({usage.percent}%)</span>
+                      </div>
+                      <div style={{ background: "#e2e8f0", borderRadius: "8px", height: "12px", overflow: "hidden" }}>
+                        <div style={{ width: `${usage.percent}%`, height: "100%", background: barColor, borderRadius: "8px" }} />
+                      </div>
+                      <div style={{ display: "flex", gap: "16px", marginTop: "8px", fontSize: "12px", color: "#6b7280", flexWrap: "wrap" }}>
+                        <span>{usage.kb.toLocaleString()} KB בשימוש</span>
+                        <span>יומן: {activityLog.length} רשומות</span>
+                        <span>ימי מכירה: {saleDays.length}</span>
+                      </div>
+                      {usage.percent >= 60 && (
+                        <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: "13px", color: usage.percent >= 80 ? "#dc2626" : "#92400e", fontWeight: 600 }}>
+                            {usage.percent >= 80 ? "⚠ האחסון כמעט מלא! מומלץ מאוד לגבות ולנקות נתונים." : "⚠ האחסון מתמלא — מומלץ לגבות ולנקות יומן."}
+                          </span>
+                          <button onClick={() => { exportBackup(); logActivity("ייצוא גיבוי מלא"); addToast("הגיבוי הורד בהצלחה", "success"); }}
+                            className="cc-btn" style={btn("primary", "sm")}>↓ גבה עכשיו</button>
+                          <button onClick={() => showConfirm({
+                            title: "ניקוי יומן פעילות",
+                            message: `למחוק ${activityLog.length} רשומות מהיומן?`,
+                            confirmLabel: "נקה הכול",
+                            confirmVariant: "danger",
+                            onConfirm: () => { setActivityLog([{ id: Date.now(), date: new Date().toLocaleString(), seller: currentSeller, action: "ניקוי יומן פעילות" }]); addToast("יומן הפעילות נוקה", "success"); },
+                          })} className="cc-btn" style={btn("warning", "sm")}>🗑 נקה יומן ({activityLog.length})</button>
+                        </div>
+                      )}
                     </div>
-                    {/* כרטיס שחזור */}
-                    <div style={{ background: "#fffbeb", borderRadius: "14px", padding: "20px", border: "1px solid #fde68a" }}>
-                      <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: "#92400e" }}>שחזור מגיבוי</h4>
-                      <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#78350f", lineHeight: 1.5 }}>מחליף את כל הנתונים הקיימים בנתוני הגיבוי. יש לאשר לפני הביצוע.</p>
-                      <label className="cc-btn" style={{ ...btn("warning"), display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
-                        בחר קובץ גיבוי
-                        <input type="file" accept=".json" onChange={importBackup} style={{ display: "none" }} />
-                      </label>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "16px" }}>
+                      {/* כרטיס גיבוי */}
+                      <div style={{ background: "#f8fafc", borderRadius: "14px", padding: "20px", border: "1px solid #e2e8f0" }}>
+                        <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: "#111827" }}>הורדת גיבוי</h4>
+                        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280", lineHeight: 1.5 }}>מוריד קובץ JSON המכיל את כל הנתונים: ימי מכירה, לקוחות, עסקאות, מחסן, מוכרים ועוד.</p>
+                        <button onClick={() => { exportBackup(); logActivity("ייצוא גיבוי מלא"); addToast("הגיבוי הורד בהצלחה", "success"); }} className="cc-btn" style={btn("primary")}>↓ הורד גיבוי מלא</button>
+                      </div>
+                      {/* כרטיס שחזור */}
+                      <div style={{ background: "#fffbeb", borderRadius: "14px", padding: "20px", border: "1px solid #fde68a" }}>
+                        <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: "#92400e" }}>שחזור מגיבוי</h4>
+                        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#78350f", lineHeight: 1.5 }}>מחליף את כל הנתונים הקיימים בנתוני הגיבוי. יש לאשר לפני הביצוע.</p>
+                        <label className="cc-btn" style={{ ...btn("warning"), display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                          בחר קובץ גיבוי
+                          <input type="file" accept=".json" onChange={importBackup} style={{ display: "none" }} />
+                        </label>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* ── תקינות נתונים ── */}
               {settingsTab === "integrity" && (
@@ -4005,7 +4992,7 @@ const importBackup = async (
                               message: `למחוק ${activityLog.length} רשומות מהיומן?`,
                               confirmLabel: "נקה הכול",
                               confirmVariant: "danger",
-                              onConfirm: () => { setActivityLog([]); addToast("יומן הפעילות נוקה", "success"); },
+                              onConfirm: () => { setActivityLog([{ id: Date.now(), date: new Date().toLocaleString(), seller: currentSeller, action: "ניקוי יומן פעילות" }]); addToast("יומן הפעילות נוקה", "success"); },
                             })}
                             className="cc-menu-item danger" style={{ ...menuItemBtn("danger"), width: "100%", textAlign: "right" as const }}>
                             נקה יומן ({activityLog.length})
@@ -4042,8 +5029,202 @@ const importBackup = async (
                   )}
                 </div>
               )}
+
+              {settingsTab === "alerts" && (() => {
+                const cfg = emailJSConfig;
+                const upd = (k: keyof typeof cfg, v: string | number) => setEmailJSConfig(prev => ({ ...prev, [k]: v }));
+                const ejsConfigured = !!(cfg.publicKey && cfg.serviceId && cfg.templateId && cfg.recipientEmail);
+                const gmailConfigured = !!(cfg.gmailClientId && cfg.recipientEmail);
+                const gmailStatusColor = gmailAuthStatus === "connected" ? "#16a34a" : gmailAuthStatus === "error" ? "#dc2626" : "#6b7280";
+                const gmailStatusText = gmailAuthStatus === "connected" ? "מחובר" : gmailAuthStatus === "connecting" ? "מתחבר..." : gmailAuthStatus === "error" ? "שגיאה" : "לא מחובר";
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "20px", direction: "rtl" }}>
+
+                    {/* ── קטע Gmail API ── */}
+                    <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "12px", padding: "16px 20px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <b style={{ fontSize: "14px", color: "#15803d" }}>Gmail API — שליחה ישירה עם קבצים מצורפים</b>
+                        <span style={{ fontSize: "12px", color: gmailStatusColor, fontWeight: 700 }}>{gmailStatusText}</span>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>Client ID</label>
+                        <input value={cfg.gmailClientId} onChange={e => upd("gmailClientId", e.target.value)}
+                          placeholder="xxx.apps.googleusercontent.com"
+                          style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #86efac", borderRadius: "8px", fontSize: "12px", direction: "ltr", textAlign: "left" }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>מייל נמען</label>
+                        <input value={cfg.recipientEmail} onChange={e => upd("recipientEmail", e.target.value)}
+                          placeholder="your@gmail.com"
+                          style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #86efac", borderRadius: "8px", fontSize: "13px", direction: "ltr", textAlign: "left" }} />
+                      </div>
+                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                        <button disabled={!gmailConfigured || gmailAuthStatus === "connecting"} className="cc-btn"
+                          style={btn(gmailConfigured ? "success" : "secondary")}
+                          onClick={() => getGmailToken().then(() => addToast("Gmail מחובר בהצלחה!", "success")).catch(e => addToast(e?.message ?? "שגיאה", "error"))}>
+                          {gmailAuthStatus === "connecting" ? "מתחבר..." : gmailAuthStatus === "connected" ? "✓ מחובר — חבר מחדש" : "חבר Gmail"}
+                        </button>
+                        <button disabled={!gmailConfigured} className="cc-btn" style={btn(gmailConfigured ? "primary" : "secondary")}
+                          onClick={sendWarehouseShortageAlert}>
+                          📧 שלח דוח חסרים
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* ── קטע EmailJS (גיבוי) ── */}
+                    <details style={{ border: "1px solid #e2e8f0", borderRadius: "12px", padding: "14px 16px" }}>
+                      <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: "13px", color: "#374151" }}>EmailJS (גיבוי — ללא קבצים מצורפים)</summary>
+                      <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                        <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "8px", padding: "12px", fontSize: "12px", color: "#0369a1" }}>
+                          הירשם ב-emailjs.com → Gmail Service → צור Template עם <code>{"{{message}}"}</code> → העתק Public Key
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                          {([["publicKey","Public Key"],["serviceId","Service ID"],["templateId","Template ID"]] as const).map(([key, label]) => (
+                            <div key={key}>
+                              <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "3px" }}>{label}</label>
+                              <input value={cfg[key] as string} onChange={e => upd(key, e.target.value)}
+                                style={{ width: "100%", boxSizing: "border-box", padding: "7px 9px", border: "1px solid #cbd5e1", borderRadius: "7px", fontSize: "12px", direction: "ltr", textAlign: "left" }} />
+                            </div>
+                          ))}
+                        </div>
+                        <button onClick={sendWarehouseShortageAlert} className="cc-btn" style={btn(ejsConfigured ? "primary" : "secondary")} disabled={!ejsConfigured}>
+                          📧 דוח חסרים ממחסן (EmailJS)
+                        </button>
+                      </div>
+                    </details>
+
+                    {/* סף מלאי נמוך */}
+                    <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "14px 16px" }}>
+                      <div style={{ fontWeight: 700, fontSize: "13px", color: "#374151", marginBottom: "10px" }}>התראת מלאי נמוך תוך כדי מכירה</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                        <label style={{ fontSize: "13px", color: "#6b7280" }}>שלח מייל כשנשאר ≤</label>
+                        <input type="number" min={0} value={cfg.saleLowStockThreshold}
+                          onChange={e => upd("saleLowStockThreshold", Math.max(0, Number(e.target.value)))}
+                          style={{ width: "70px", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: "8px", fontSize: "14px", textAlign: "center" }} />
+                        <label style={{ fontSize: "13px", color: "#6b7280" }}>יחידות (נשלח פעם אחת בכל מכירה)</label>
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize: "12px", color: "#9ca3af" }}>
+                      ✓ מייל סיכום + קובץ JSON — נשלח אוטומטי עם סגירת יום (Gmail API)<br />
+                      ✓ מייל מלאי נמוך — נשלח אוטומטי תוך כדי מכירה
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
+          );
+        })()}
+
+        {/* ══ טאב סליקת אשראי ══ */}
+        {!cashierMode && adminTab === "settings" && settingsTab === "payment" && (
+          <div style={{ padding: "24px", direction: "rtl", display: "flex", flexDirection: "column", gap: "20px" }}>
+            <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "12px", padding: "14px 18px", fontSize: "13px", color: "#1e40af", lineHeight: 1.7 }}>
+              הגדרות אלו מחברות את המערכת לשירות הסליקה <strong>נדרים פלוס</strong>.<br />
+              ניתן למצוא את הפרטים בממשק נדרים פלוס תחת: <strong>דוחות ← עוד ← מפתחות API</strong>.
+            </div>
+
+            {/* מספר מוסד */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>מספר מוסד</label>
+              <input
+                type="text"
+                placeholder="לדוגמה: 7005701"
+                value={nedarimConfig.mosad}
+                onChange={e => setNedarimConfig(prev => ({ ...prev, mosad: e.target.value }))}
+                style={{ ...inputStyle, maxWidth: "320px" }}
+              />
+              <span style={{ fontSize: "12px", color: "#6b7280" }}>
+                יש למלאות את מספר המוסד בנדרים פלוס — המספר המזהה של הארגון שלכם בשירות.
+              </span>
+            </div>
+
+            {/* קוד API */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>קוד API (ApiValid)</label>
+              <input
+                type="text"
+                placeholder="קוד אימות דף התשלום"
+                value={nedarimConfig.apiValid}
+                onChange={e => setNedarimConfig(prev => ({ ...prev, apiValid: e.target.value }))}
+                style={{ ...inputStyle, maxWidth: "320px" }}
+              />
+              <span style={{ fontSize: "12px", color: "#6b7280" }}>
+                יש למלאות את קוד ה־ApiValid — ניתן למצוא אותו בממשק נדרים פלוס תחת דוחות, בכרטיסיית <strong>עוד</strong>, בחלק <strong>מפתחות API</strong>, בשדה <strong>סיסמת אימות לדף התשלום (ApiValid) להטמעת דף התשלום של נדרים פלוס באתר שלכם</strong>.
+              </span>
+            </div>
+
+            {(!nedarimConfig.mosad || !nedarimConfig.apiValid) && (
+              <div style={{ background: "#fef9c3", border: "1px solid #fde047", borderRadius: "10px", padding: "10px 14px", fontSize: "13px", color: "#854d0e" }}>
+                ⚠️ יש למלאות את שני השדות כדי שסליקת האשראי תפעל.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ טאב אבטחה ══ */}
+        {!cashierMode && adminTab === "settings" && settingsTab === "security" && (() => {
+          const savePassword = () => {
+            if (!newPasswordInput) { setPasswordSettingsMsg("error:יש להזין סיסמה"); return; }
+            if (newPasswordInput !== newPasswordConfirm) { setPasswordSettingsMsg("error:הסיסמאות אינן תואמות"); return; }
+            setAppPassword(newPasswordInput);
+            setNewPasswordInput("");
+            setNewPasswordConfirm("");
+            setPasswordSettingsMsg("success:הסיסמה נשמרה");
+            setTimeout(() => setPasswordSettingsMsg(""), 3000);
+          };
+          const removePassword = () => {
+            setAppPassword("");
+            setPasswordSettingsMsg("success:הסיסמה הוסרה — האפליקציה פתוחה לכולם");
+            setTimeout(() => setPasswordSettingsMsg(""), 3000);
+          };
+          const isError = passwordSettingsMsg.startsWith("error:");
+          const msgText = passwordSettingsMsg.replace(/^(error|success):/, "");
+          return (
+            <div style={{ padding: "24px", direction: "rtl", display: "flex", flexDirection: "column", gap: "20px" }}>
+              {/* מצב נוכחי */}
+              <div style={{ background: appPassword ? "#f0fdf4" : "#fef9c3", border: `1px solid ${appPassword ? "#bbf7d0" : "#fde047"}`, borderRadius: "12px", padding: "14px 18px", display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "20px" }}>{appPassword ? "🔒" : "🔓"}</span>
+                <span style={{ fontSize: "14px", fontWeight: 600, color: appPassword ? "#15803d" : "#92400e" }}>
+                  {appPassword ? "האפליקציה מוגנת בסיסמה" : "האפליקציה פתוחה — אין סיסמה מוגדרת"}
+                </span>
+              </div>
+
+              {/* הגדרת / שינוי סיסמה */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>
+                  {appPassword ? "שינוי סיסמה" : "הגדרת סיסמה"}
+                </label>
+                <input type="password" placeholder="סיסמה חדשה" value={newPasswordInput}
+                  onChange={e => { setNewPasswordInput(e.target.value); setPasswordSettingsMsg(""); }}
+                  style={{ ...inputStyle, maxWidth: "300px" }} />
+                <input type="password" placeholder="אימות סיסמה" value={newPasswordConfirm}
+                  onChange={e => { setNewPasswordConfirm(e.target.value); setPasswordSettingsMsg(""); }}
+                  style={{ ...inputStyle, maxWidth: "300px" }} />
+                <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+                  <button onClick={savePassword} className="cc-btn" style={{ ...btn("primary"), alignSelf: "flex-start" }}>
+                    {appPassword ? "שמור סיסמה חדשה" : "הגדר סיסמה"}
+                  </button>
+                  {appPassword && (
+                    <button onClick={removePassword} className="cc-btn" style={{ ...btn("dangerGhost"), alignSelf: "flex-start" }}>
+                      הסר סיסמה
+                    </button>
+                  )}
+                </div>
+                {msgText && (
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: isError ? "#dc2626" : "#15803d" }}>
+                    {isError ? "⚠️ " : "✓ "}{msgText}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "12px 16px", fontSize: "12px", color: "#6b7280", lineHeight: 1.7 }}>
+                הסיסמה נשמרת במכשיר זה בלבד ואינה מועברת לשרת.<br />
+                כל מי שיכנס לקישור Netlify ידרש להזין אותה.<br />
+                כניסה מאושרת נשמרת לטאב הנוכחי — פתיחת טאב חדש תדרוש הזנה מחדש.
+              </div>
+            </div>
           );
         })()}
 
@@ -4058,8 +5239,8 @@ const importBackup = async (
                 onKeyDown={e => { if (e.key === "Enter") { addSeller(); setShowAddSellerModal(false); } }}
                 style={{ ...inputStyle, width: "100%", marginBottom: "12px", boxSizing: "border-box" }} autoFocus />
               <div style={{ display: "flex", gap: "8px" }}>
-                <button onClick={() => { addSeller(); setShowAddSellerModal(false); }} className="cc-btn" style={btn("primary")}>הוסף</button>
                 <button onClick={() => setShowAddSellerModal(false)} className="cc-btn" style={btn("secondary")}>ביטול</button>
+                <button onClick={() => { addSeller(); setShowAddSellerModal(false); }} className="cc-btn" style={btn("primary")}>הוסף</button>
               </div>
             </div>
           </div>
@@ -4193,7 +5374,7 @@ const importBackup = async (
 
               {/* ── סקירת מכירות ── */}
               {reportTab === "sales" && (() => {
-                const thR: React.CSSProperties = { padding: "9px 12px", textAlign: "right", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f8fafc", borderBottom: "2px solid #e2e8f0", whiteSpace: "nowrap" };
+                const thR: React.CSSProperties = { padding: "9px 12px", textAlign: "center", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f8fafc", borderBottom: "2px solid #e2e8f0", whiteSpace: "nowrap" };
                 const tdR: React.CSSProperties = { padding: "8px 12px", fontSize: "13px", borderBottom: "1px solid #f1f5f9" };
                 const daily = getDaily();
                 const monthly = getMonthly();
@@ -4269,7 +5450,7 @@ const importBackup = async (
 
               {/* ── פילוחים ── */}
               {reportTab === "breakdown" && (() => {
-                const thB: React.CSSProperties = { padding: "9px 12px", textAlign: "right", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f8fafc", borderBottom: "2px solid #e2e8f0", whiteSpace: "nowrap" };
+                const thB: React.CSSProperties = { padding: "9px 12px", textAlign: "center", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f8fafc", borderBottom: "2px solid #e2e8f0", whiteSpace: "nowrap" };
                 const tdB: React.CSSProperties = { padding: "8px 12px", fontSize: "13px", borderBottom: "1px solid #f1f5f9" };
                 const grandNet = netTotal || 1;
                 const buildBreakdown = (data: Record<string, number>) =>
@@ -4328,7 +5509,7 @@ const importBackup = async (
 
               {/* ── סיכום מלאי שנתי ── */}
               {reportTab === "inventory" && (() => {
-                const thS: React.CSSProperties = { padding: "10px 12px", textAlign: "right", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 };
+                const thS: React.CSSProperties = { padding: "10px 12px", textAlign: "center", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 };
                 const tdS: React.CSSProperties = { padding: "8px 12px", fontSize: "13px", borderBottom: "1px solid #f1f5f9" };
                 const years = [...new Set(saleDays.map(d => getSaleDayYear(d)))].sort((a, b) => b - a);
                 const daysInYear = saleDays.filter(d => getSaleDayYear(d) === inventorySelectedYear);
@@ -4398,31 +5579,69 @@ const importBackup = async (
                             <th style={{ ...thS, textAlign: "center" }}>סה"כ נמכר</th>
                             <th style={{ ...thS, textAlign: "center" }}>סכום נמכר</th>
                             <th style={{ ...thS, textAlign: "center" }}>סה"כ נשאר</th>
-                            <th style={{ ...thS, textAlign: "center" }}>פירוט לפי מכירה</th>
+                            <th style={{ ...thS, textAlign: "center" }}>פירוט</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {allRows.map(row => (
-                            <tr key={row.key} style={{ background: row.isLinked ? "white" : "#fffbeb" }}>
-                              <td style={{ ...tdS, fontWeight: 600 }}>
-                                {row.label}
-                                {row.isLinked && row.warehouseCode && (
-                                  <span style={{ marginRight: "6px", fontSize: "11px", color: "#6b7280", fontWeight: 400 }}>({row.warehouseCode})</span>
+                          {allRows.map(row => {
+                            const expanded = annualInventoryExpandedKey === row.key;
+                            return (
+                              <React.Fragment key={row.key}>
+                                <tr style={{ background: row.isLinked ? "white" : "#fffbeb" }}>
+                                  <td style={{ ...tdS, fontWeight: 600 }}>
+                                    {row.label}
+                                    {row.isLinked && row.warehouseCode && (
+                                      <span style={{ marginRight: "6px", fontSize: "11px", color: "#6b7280", fontWeight: 400 }}>({row.warehouseCode})</span>
+                                    )}
+                                    {!row.isLinked && (
+                                      <span style={{ marginRight: "8px", fontSize: "11px", background: "#fef3c7", color: "#92400e", padding: "2px 6px", borderRadius: "8px", fontWeight: 400 }}>לא מקושר למחסן</span>
+                                    )}
+                                  </td>
+                                  <td style={{ ...tdS, textAlign: "center" }}>{row.required}</td>
+                                  <td style={{ ...tdS, textAlign: "center" }}>{row.actualIn}</td>
+                                  <td style={{ ...tdS, textAlign: "center", color: "#2563eb", fontWeight: 600 }}>{row.sold}</td>
+                                  <td style={{ ...tdS, textAlign: "center", fontWeight: 700, color: "#0891b2" }}>₪{row.amount.toFixed(2)}</td>
+                                  <td style={{ ...tdS, textAlign: "center", fontWeight: 700, color: row.remaining < 0 ? "#dc2626" : row.remaining === 0 ? "#6b7280" : "#16a34a" }}>{row.remaining}</td>
+                                  <td style={{ ...tdS, textAlign: "center" }}>
+                                    <button onClick={() => setAnnualInventoryExpandedKey(expanded ? null : row.key)} className="cc-btn"
+                                      style={{ padding: "3px 10px", fontSize: "12px", background: expanded ? "#e0e7ff" : "#f1f5f9", color: expanded ? "#4338ca" : "#374151", border: "1px solid " + (expanded ? "#c7d2fe" : "#e2e8f0"), borderRadius: "6px", cursor: "pointer", fontWeight: expanded ? 700 : 400 }}>
+                                      {expanded ? "▲ סגור" : `▼ ${row.byDay.length} ימים`}
+                                    </button>
+                                  </td>
+                                </tr>
+                                {expanded && (
+                                  <tr style={{ background: "#f8fafc" }}>
+                                    <td colSpan={7} style={{ padding: "0 12px 12px" }}>
+                                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", marginTop: "6px" }}>
+                                        <thead>
+                                          <tr style={{ background: "#e2e8f0" }}>
+                                            <th style={{ padding: "5px 10px", textAlign: "right", fontWeight: 600 }}>יום מכירה</th>
+                                            <th style={{ padding: "5px 10px", textAlign: "center", fontWeight: 600 }}>דרוש</th>
+                                            <th style={{ padding: "5px 10px", textAlign: "center", fontWeight: 600 }}>נכנס</th>
+                                            <th style={{ padding: "5px 10px", textAlign: "center", fontWeight: 600 }}>נמכר</th>
+                                            <th style={{ padding: "5px 10px", textAlign: "center", fontWeight: 600 }}>סכום</th>
+                                            <th style={{ padding: "5px 10px", textAlign: "center", fontWeight: 600 }}>נשאר</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {row.byDay.map((d, i) => (
+                                            <tr key={i} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                                              <td style={{ padding: "5px 10px" }}>{d.dayName}</td>
+                                              <td style={{ padding: "5px 10px", textAlign: "center" }}>{d.required}</td>
+                                              <td style={{ padding: "5px 10px", textAlign: "center" }}>{d.actualIn}</td>
+                                              <td style={{ padding: "5px 10px", textAlign: "center", color: "#2563eb", fontWeight: 600 }}>{d.sold}</td>
+                                              <td style={{ padding: "5px 10px", textAlign: "center", color: "#0891b2" }}>₪{d.amount.toFixed(2)}</td>
+                                              <td style={{ padding: "5px 10px", textAlign: "center", color: d.remaining < 0 ? "#dc2626" : d.remaining === 0 ? "#6b7280" : "#16a34a", fontWeight: 600 }}>{d.remaining}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </td>
+                                  </tr>
                                 )}
-                                {!row.isLinked && (
-                                  <span style={{ marginRight: "8px", fontSize: "11px", background: "#fef3c7", color: "#92400e", padding: "2px 6px", borderRadius: "8px", fontWeight: 400 }}>לא מקושר למחסן</span>
-                                )}
-                              </td>
-                              <td style={{ ...tdS, textAlign: "center" }}>{row.required}</td>
-                              <td style={{ ...tdS, textAlign: "center" }}>{row.actualIn}</td>
-                              <td style={{ ...tdS, textAlign: "center", color: "#2563eb", fontWeight: 600 }}>{row.sold}</td>
-                              <td style={{ ...tdS, textAlign: "center", fontWeight: 700, color: "#0891b2" }}>₪{row.amount.toFixed(2)}</td>
-                              <td style={{ ...tdS, textAlign: "center", fontWeight: 700, color: row.remaining < 0 ? "#dc2626" : row.remaining === 0 ? "#6b7280" : "#16a34a" }}>{row.remaining}</td>
-                              <td style={{ ...tdS, fontSize: "11px", color: "#6b7280" }}>
-                                {row.byDay.map(d => `${d.dayName}: נכנס ${d.actualIn} נמכר ${d.sold} ₪${d.amount.toFixed(0)}`).join(" | ")}
-                              </td>
-                            </tr>
-                          ))}
+                              </React.Fragment>
+                            );
+                          })}
                           {allRows.length === 0 && (
                             <tr><td colSpan={7} style={{ ...tdS, textAlign: "center", color: "#9ca3af", padding: "24px" }}>אין נתוני מלאי לשנה זו</td></tr>
                           )}
@@ -4450,7 +5669,7 @@ const importBackup = async (
 
         {!cashierMode && adminTab === "inventory" && inventoryAdminTab === "inventory" && (() => {
           const selectedDay = inventorySelectedDayId ? saleDays.find(d => d.id === inventorySelectedDayId) : null;
-          const thStyle: React.CSSProperties = { padding: "10px 12px", textAlign: "right", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 };
+          const thStyle: React.CSSProperties = { padding: "10px 12px", textAlign: "center", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 };
           const inputNum = (val: number, onChange: (v: number) => void): React.ReactNode =>
             <input type="number" min={0} value={val || ""} onChange={e => onChange(Number(e.target.value) || 0)}
               onWheel={e => (e.target as HTMLElement).blur()}
@@ -5041,7 +6260,7 @@ const importBackup = async (
           ])].sort((a, b) => b - a);
           const summaryRows = getWarehouseSummary(warehouseYear);
           const detailItem = warehouseDetailCode != null ? summaryRows.find(r => r.code === warehouseDetailCode) ?? null : null;
-          const thSt: React.CSSProperties = { padding: "10px 12px", textAlign: "right", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 };
+          const thSt: React.CSSProperties = { padding: "10px 12px", textAlign: "center", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky", top: 0, zIndex: 2 };
           const tdSt: React.CSSProperties = { padding: "8px 12px", fontSize: "13px", borderBottom: "1px solid #f1f5f9" };
           const inpSt: React.CSSProperties = { padding: "8px 10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "13px", width: "100%", boxSizing: "border-box" };
 
@@ -5083,6 +6302,9 @@ const importBackup = async (
                     <button onClick={() => exportWarehouseToXlsx(warehouseYear)} className="cc-btn" style={btn("secondary", "sm")}>
                       ↓ ייצוא לאקסל
                     </button>
+                    <button onClick={sendWarehouseShortageAlert} className="cc-btn" style={btn("secondary", "sm")} title="שלח מייל על פריטים עם סטטוס חסר">
+                      📧 דוח חסרים
+                    </button>
                   </div>
                 </div>
 
@@ -5095,12 +6317,6 @@ const importBackup = async (
                         <input value={whCode} onChange={e => setWhCode(e.target.value.toUpperCase())} placeholder="לדוגמה: CHOCO-500" style={inpSt} /></div>
                       <div><label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>שם מוצר *</label>
                         <input value={whName} onChange={e => setWhName(e.target.value)} placeholder="שם המוצר במחסן" style={inpSt} /></div>
-                      <div><label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>יתרת פתיחה</label>
-                        <input type="number" min={0} value={whOpeningQty} onChange={e => setWhOpeningQty(e.target.value)} style={inpSt} /></div>
-                      <div><label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>כניסות למחסן</label>
-                        <input type="number" min={0} value={whAddedQty} onChange={e => setWhAddedQty(e.target.value)} style={inpSt} /></div>
-                      <div><label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>תיקון מלאי</label>
-                        <input type="number" value={whAdjQty} onChange={e => setWhAdjQty(e.target.value)} style={inpSt} /></div>
                       <div><label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>ספק</label>
                         <input value={whSupplier} onChange={e => setWhSupplier(e.target.value)} placeholder="שם הספק" style={inpSt} /></div>
                       <div><label style={{ fontSize: "12px", color: "#6b7280", display: "block", marginBottom: "4px" }}>מחיר עלות ליחידה (₪)</label>
@@ -5109,10 +6325,10 @@ const importBackup = async (
                         <input value={whNotes} onChange={e => setWhNotes(e.target.value)} style={inpSt} /></div>
                     </div>
                     <div style={{ display: "flex", gap: "10px", marginTop: "16px" }}>
+                      <button onClick={clearWarehouseForm} className="cc-btn" style={btn("secondary", "sm")}>ביטול</button>
                       <button onClick={saveWarehouseItem} className="cc-btn" style={btn("primary", "sm")}>
                         {warehouseEditId != null ? "שמור שינויים" : "הוסף"}
                       </button>
-                      <button onClick={clearWarehouseForm} className="cc-btn" style={btn("secondary", "sm")}>ביטול</button>
                     </div>
                   </div>
                 )}
@@ -5282,7 +6498,7 @@ const importBackup = async (
                                 const rowBg = row.status === "חסר" ? "#fef2f2" : "white";
                                 return (
                                   <tr key={row.id} style={{ background: rowBg, cursor: "pointer" }}
-                                    onClick={() => setWarehouseDetailCode(row.code)}>
+                                    onClick={() => { setWarehouseDetailCode(row.code); setWarehouseDetailTab("summary"); }}>
                                     <td style={{ ...tdSt, fontWeight: 600 }}>{row.name}
                                       {row.notes && <div style={{ fontSize: "11px", color: "#9ca3af", marginTop: "2px" }}>{row.notes}</div>}
                                     </td>
@@ -5304,12 +6520,13 @@ const importBackup = async (
                                       </span>
                                     </td>
                                     <td style={{ ...tdSt, textAlign: "center" }} onClick={e => e.stopPropagation()}>
-                                      <button onClick={() => setWarehouseDetailCode(row.code)} className="cc-btn" style={btn("ghost", "sm")}>
+                                      <button onClick={() => { setWarehouseDetailCode(row.code); setWarehouseDetailTab("summary"); }} className="cc-btn" style={btn("ghost", "sm")}>
                                         פירוט
                                       </button>
                                     </td>
                                     <td style={{ ...tdSt, textAlign: "center" }} onClick={e => e.stopPropagation()}>
                                       <div style={{ display: "flex", gap: "6px", justifyContent: "center" }}>
+                                        <button onClick={() => { setWhEntryModalItemId(row.id); setWhEntryQty(""); setWhEntryDatetime(""); setWhEntryNotes(""); }} className="cc-btn" style={btn("success", "sm")}>+ מלאי</button>
                                         <button onClick={() => startEditWarehouseItem(row)} className="cc-btn" style={btn("secondary", "sm")}>עריכה</button>
                                         <button onClick={() => deleteWarehouseItemById(row.id)} className="cc-btn" style={btn("danger", "sm")}>מחיקה</button>
                                       </div>
@@ -5352,7 +6569,7 @@ const importBackup = async (
               {/* Detail modal — 3 sections */}
               {detailItem && (
                 <div
-                  style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9999 }}
+                  style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "flex-start", paddingTop: "16px", boxSizing: "border-box", zIndex: 9999 }}
                   onClick={() => setWarehouseDetailCode(null)}
                 >
                   <div
@@ -5368,52 +6585,67 @@ const importBackup = async (
                       <button onClick={() => setWarehouseDetailCode(null)} className="cc-btn" style={{ ...iconBtn(), fontSize: "24px" }}>×</button>
                     </div>
 
-                    <div style={{ overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: "24px" }}>
+                    {/* Tab bar */}
+                    <div style={{ display: "flex", gap: "4px", borderBottom: "2px solid #e2e8f0", marginBottom: "16px" }}>
+                      {([
+                        { key: "summary", label: "סיכום" },
+                        { key: "days", label: "פירוט לפי ימי מכירה" },
+                        { key: "entries", label: `כניסות למחסן (${(detailItem.entries ?? []).length})` },
+                      ] as const).map(t => (
+                        <button key={t.key} onClick={() => setWarehouseDetailTab(t.key)}
+                          className="cc-btn"
+                          style={{ padding: "8px 16px", fontSize: "13px", fontWeight: warehouseDetailTab === t.key ? 700 : 400, border: "none", borderBottom: warehouseDetailTab === t.key ? "2px solid #2563eb" : "2px solid transparent", marginBottom: "-2px", background: "none", color: warehouseDetailTab === t.key ? "#2563eb" : "#6b7280", cursor: "pointer", borderRadius: 0 }}>
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
 
-                      {/* Section 1 — סיכום כללי */}
-                      <div>
-                        <h4 style={{ margin: "0 0 12px 0", fontSize: "14px", color: "#374151", fontWeight: 700 }}>סיכום כללי</h4>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px" }}>
-                          {[
-                            { label: "כמות הדרושה", value: detailItem.requiredTotal, color: "#374151" },
-                            { label: "כמות לאריזה", value: detailItem.plannedTotal, color: "#374151" },
-                            { label: "נארז", value: detailItem.packedTotal, color: "#2563eb" },
-                            { label: "עוד לארוז", value: detailItem.remainingToPackQty, color: "#7c3aed" },
-                            { label: "חזר למחסן", value: detailItem.returnedTotal, color: "#0891b2" },
-                            { label: "קיים כעת", value: detailItem.currentQty, color: detailItem.currentQty <= 0 ? "#dc2626" : "#16a34a" },
-                            { label: "חסר", value: detailItem.shortageQty, color: detailItem.shortageQty > 0 ? "#dc2626" : "#16a34a" },
-                          ].map(({ label, value, color }) => (
-                            <div key={label} style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px", textAlign: "center" }}>
-                              <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>{label}</div>
-                              <div style={{ fontSize: "20px", fontWeight: 700, color }}>{value || "—"}</div>
+                    <div ref={warehouseDetailScrollRef} style={{ overflowY: "auto", flex: 1 }}>
+
+                      {/* Tab 1 — סיכום */}
+                      {warehouseDetailTab === "summary" && (
+                        <div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px" }}>
+                            {[
+                              { label: "כמות הדרושה", value: detailItem.requiredTotal, color: "#374151" },
+                              { label: "כמות לאריזה", value: detailItem.plannedTotal, color: "#374151" },
+                              { label: "נארז", value: detailItem.packedTotal, color: "#2563eb" },
+                              { label: "עוד לארוז", value: detailItem.remainingToPackQty, color: "#7c3aed" },
+                              { label: "חזר למחסן", value: detailItem.returnedTotal, color: "#0891b2" },
+                              { label: "קיים כעת", value: detailItem.currentQty, color: detailItem.currentQty <= 0 ? "#dc2626" : "#16a34a" },
+                              { label: "חסר", value: detailItem.shortageQty, color: detailItem.shortageQty > 0 ? "#dc2626" : "#16a34a" },
+                            ].map(({ label, value, color }) => (
+                              <div key={label} style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px", textAlign: "center" }}>
+                                <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>{label}</div>
+                                <div style={{ fontSize: "20px", fontWeight: 700, color }}>{value || "—"}</div>
+                              </div>
+                            ))}
+                          </div>
+                          {detailItem.notes && (
+                            <div style={{ background: "#fffbeb", borderRadius: "10px", padding: "10px 14px", marginTop: "14px" }}>
+                              <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "3px" }}>הערות</div>
+                              <div style={{ fontSize: "13px", color: "#374151" }}>{detailItem.notes}</div>
                             </div>
-                          ))}
+                          )}
                         </div>
-                      </div>
+                      )}
 
-                      {/* Section 2 — פירוט לפי מכירות */}
-                      <div>
-                        <h4 style={{ margin: "0 0 12px 0", fontSize: "14px", color: "#374151", fontWeight: 700 }}>פירוט לפי ימי מכירה</h4>
+                      {/* Tab 2 — פירוט לפי ימי מכירה */}
+                      {warehouseDetailTab === "days" && (
                         <div style={{ overflowX: "auto" }}>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
                             <thead>
                               <tr>
-                                <th style={thSt}>יום מכירה</th>
-                                <th style={thSt}>שם מוצר ביום</th>
-                                <th style={{ ...thSt, textAlign: "center" }}>נדרש</th>
-                                <th style={{ ...thSt, textAlign: "center" }}>לאריזה</th>
-                                <th style={{ ...thSt, textAlign: "center" }}>נארז</th>
-                                <th style={{ ...thSt, textAlign: "center", color: "#2563eb" }}>נמכר</th>
-                                <th style={{ ...thSt, textAlign: "center" }}>נשאר</th>
-                                <th style={{ ...thSt, textAlign: "center" }}>נספר</th>
-                                <th style={{ ...thSt, textAlign: "center", color: "#0891b2" }}>חזר</th>
+                                {["יום מכירה", "שם מוצר ביום", "נדרש", "לאריזה", "נארז", "נמכר", "נשאר", "נספר", "חזר"].map((h, hi) => (
+                                  <th key={hi} style={{ ...thSt, textAlign: "center", color: h === "נמכר" ? "#2563eb" : h === "חזר" ? "#0891b2" : "#374151" }}>{h}</th>
+                                ))}
                               </tr>
                             </thead>
                             <tbody>
                               {detailItem.dayDetails.map((d, i) => (
                                 <tr key={i} style={{ background: i % 2 === 0 ? "white" : "#f8fafc" }}>
-                                  <td style={{ ...tdSt, fontWeight: 600 }}>{d.dayName}</td>
-                                  <td style={{ ...tdSt, color: "#6b7280" }}>{d.productName}</td>
+                                  <td style={{ ...tdSt, textAlign: "center", fontWeight: 600 }}>{d.dayName}</td>
+                                  <td style={{ ...tdSt, textAlign: "center", color: "#6b7280" }}>{d.productName}</td>
                                   <td style={{ ...tdSt, textAlign: "center" }}>{d.requiredQty || "—"}</td>
                                   <td style={{ ...tdSt, textAlign: "center" }}>{d.plannedQty || "—"}</td>
                                   <td style={{ ...tdSt, textAlign: "center" }}>{d.actualInQty || "—"}</td>
@@ -5433,33 +6665,59 @@ const importBackup = async (
                             </tbody>
                           </table>
                         </div>
-                      </div>
+                      )}
 
-                      {/* Section 3 — נתוני מחסן */}
-                      <div>
-                        <h4 style={{ margin: "0 0 12px 0", fontSize: "14px", color: "#374151", fontWeight: 700 }}>נתוני מחסן</h4>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "10px" }}>
-                          {[
-                            { label: "יתרת פתיחה", value: detailItem.openingQty },
-                            { label: "כניסות", value: detailItem.addedQty },
-                            { label: "תיקון", value: detailItem.adjustmentQty, signed: true },
-                            { label: "בסיס מחסן (פתיחה + כניסות + תיקון)", value: detailItem.baseWarehouseQty },
-                          ].map(({ label, value, signed }) => (
-                            <div key={label} style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px", textAlign: "center" }}>
-                              <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>{label}</div>
-                              <div style={{ fontSize: "18px", fontWeight: 700, color: signed && (value as number) !== 0 ? "#f59e0b" : "#374151" }}>
-                                {signed && (value as number) > 0 ? `+${value}` : value}
+                      {/* Tab 3 — כניסות למחסן */}
+                      {warehouseDetailTab === "entries" && (() => {
+                        const entries = (detailItem.entries ?? []).slice().sort((a: WarehouseEntry, b: WarehouseEntry) => b.datetime.localeCompare(a.datetime));
+                        const fmtDt = (dt: string) => {
+                          const [date, time = ""] = dt.replace("T", " ").split(" ");
+                          const [y, m, d] = date.split("-");
+                          return `${d}.${m}.${y}${time ? " " + time : ""}`;
+                        };
+                        return (
+                          <div>
+                            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
+                              <button onClick={() => { setWhEntryModalItemId(detailItem.id); setWhEntryQty(""); setWhEntryDatetime(""); setWhEntryNotes(""); }}
+                                className="cc-btn" style={btn("success", "sm")}>+ הוספת מלאי</button>
+                            </div>
+                            {entries.length === 0 ? (
+                              <div style={{ color: "#9ca3af", fontSize: "13px", padding: "12px 0" }}>אין כניסות מלאי מתועדות — לחצו '+ הוספת מלאי' להוספה.</div>
+                            ) : (
+                              <div style={{ overflowX: "auto" }}>
+                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                                  <thead>
+                                    <tr>
+                                      {["תאריך ושעה", "כמות", "הערות", "מחיקה"].map((h, hi) => (
+                                        <th key={hi} style={{ ...thSt, textAlign: "center" }}>{h}</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {entries.map((e: WarehouseEntry, i: number) => (
+                                      <tr key={e.id} style={{ background: i % 2 === 0 ? "white" : "#f8fafc" }}>
+                                        <td style={{ ...tdSt, textAlign: "center", fontFamily: "monospace" }}>{fmtDt(e.datetime)}</td>
+                                        <td style={{ ...tdSt, textAlign: "center", fontWeight: 700, color: "#16a34a" }}>+{e.qty}</td>
+                                        <td style={{ ...tdSt, textAlign: "center", color: "#6b7280" }}>{e.notes ?? "—"}</td>
+                                        <td style={{ ...tdSt, textAlign: "center" }}>
+                                          <button onClick={() => deleteWarehouseEntry(detailItem.id, e.id)} className="cc-btn" style={btn("danger", "sm")}>✕</button>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                  <tfoot>
+                                    <tr style={{ background: "#f0fdfa", fontWeight: 700 }}>
+                                      <td style={{ ...tdSt, textAlign: "center" }}>סה"כ כניסות</td>
+                                      <td style={{ ...tdSt, textAlign: "center", color: "#16a34a" }}>+{entries.reduce((s: number, e: WarehouseEntry) => s + e.qty, 0)}</td>
+                                      <td colSpan={2} style={tdSt}></td>
+                                    </tr>
+                                  </tfoot>
+                                </table>
                               </div>
-                            </div>
-                          ))}
-                          {detailItem.notes && (
-                            <div style={{ background: "#fffbeb", borderRadius: "10px", padding: "12px", gridColumn: "1 / -1" }}>
-                              <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>הערות</div>
-                              <div style={{ fontSize: "13px", color: "#374151" }}>{detailItem.notes}</div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                     </div>
                   </div>
@@ -5516,8 +6774,8 @@ const importBackup = async (
               );
             })()}
             <div style={{ display: "flex", gap: "10px" }}>
-              <button onClick={savePreOrder} className="cc-btn" style={{ ...btn("primary"), flex: 1 }}>שמור הזמנה</button>
               <button onClick={() => setPreOrderForm(null)} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>ביטול</button>
+              <button onClick={savePreOrder} className="cc-btn" style={{ ...btn("primary"), flex: 1 }}>שמור הזמנה</button>
             </div>
           </div>
         </div>
@@ -5558,14 +6816,72 @@ const importBackup = async (
                 {inv.length === 0 && <div style={{ color: "#9ca3af", textAlign: "center", padding: "20px" }}>אין מוצרי מלאי ליום זה</div>}
               </div>
               <div style={{ display: "flex", gap: "10px" }}>
+                <button onClick={() => setShowCloseDayModal(false)} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>ביטול</button>
                 <button onClick={() => {
                   Object.entries(closeDayActuals).forEach(([pid, qty]) => {
                     updateInventoryField(activeSaleDay.id, Number(pid), "actualEndQty", qty);
                   });
                   setShowCloseDayModal(false);
+                  sendSaleDayClosingEmail(activeSaleDay);
+                  exportSaleDayData(activeSaleDay.id);
+                  setPostCloseDay(activeSaleDay);
                 }} className="cc-btn" style={{ ...btn("success", "lg"), flex: 2 }}>✓ שמור ספירת מלאי</button>
-                <button onClick={() => setShowCloseDayModal(false)} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>ביטול</button>
               </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* חלון שליחת Gmail אחרי סגירת יום */}
+      {postCloseDay && (() => {
+        const day = postCloseDay;
+        const safeName = day.name.replace(/[^\w֐-׿]/g, "_");
+        const fileName = `יום_מכירה_${safeName}_${day.id}.json`;
+        const txCount = (day.transactions ?? []).length;
+        const totalNet = (day.transactions ?? []).reduce((s, t) => s + t.finalTotal, 0);
+        const summaryText = buildSaleDaySummaryText(day);
+        const emailSubject = `סיכום יום מכירה — ${day.name}`;
+        const recipient = emailJSConfig.recipientEmail;
+        const hasGmail = !!(emailJSConfig.gmailClientId && recipient);
+        const gmailComposeUrl = `https://mail.google.com/mail/?view=cm&fs=1${recipient ? `&to=${encodeURIComponent(recipient)}` : ""}&su=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(summaryText)}`;
+        return (
+          <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.55)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 10010 }}
+            onClick={() => { if (!postCloseSending) setPostCloseDay(null); }}>
+            <div style={{ background: "white", borderRadius: "20px", padding: "28px 32px", width: "420px", maxWidth: "95%", boxShadow: "0 16px 40px rgba(0,0,0,0.3)", direction: "rtl", textAlign: "center", display: "flex", flexDirection: "column", gap: "20px" }}
+              onClick={e => e.stopPropagation()}>
+              <div style={{ fontSize: "48px", lineHeight: 1 }}>📥</div>
+              <div>
+                <h2 style={{ margin: "0 0 6px", fontSize: "18px" }}>הקובץ הורד — {day.name}</h2>
+                <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>{txCount} עסקאות | סה"כ ₪{totalNet.toFixed(2)}</p>
+              </div>
+              {hasGmail ? (
+                <button onClick={async () => {
+                  setPostCloseSending(true);
+                  const payload = JSON.stringify({ exportedAt: new Date().toISOString(), source: "saleDayExport", saleDay: day, sellers }, null, 2);
+                  const ok = await sendViaGmail(recipient!, emailSubject, summaryText, fileName, payload);
+                  setPostCloseSending(false);
+                  if (ok) {
+                    addToast("המייל עם הקובץ המצורף נשלח בהצלחה", "success");
+                    logActivity(`מייל עם קובץ נשלח — ${day.name}`);
+                    setPostCloseDay(null);
+                  }
+                }} disabled={postCloseSending} className="cc-btn"
+                  style={{ padding: "14px 20px", background: postCloseSending ? "#94a3b8" : "#4285f4", color: "white", border: "none", borderRadius: "12px", fontWeight: 700, fontSize: "15px", cursor: postCloseSending ? "wait" : "pointer" }}>
+                  {postCloseSending ? "שולח..." : "📧 שלח מייל עם קובץ מצורף"}
+                </button>
+              ) : (
+                <>
+                  <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>
+                    צרף את הקובץ {fileName} שהורד ושלח
+                  </p>
+                  <a href={gmailComposeUrl} target="_blank" rel="noopener noreferrer"
+                    style={{ display: "block", padding: "14px 20px", background: "#4285f4", color: "white", borderRadius: "12px", fontWeight: 700, fontSize: "15px", textDecoration: "none" }}
+                    onClick={() => setPostCloseDay(null)}>
+                    📧 פתח Gmail לשליחה
+                  </a>
+                </>
+              )}
+              <button onClick={() => setPostCloseDay(null)} disabled={postCloseSending} className="cc-btn" style={{ ...btn("secondary"), width: "100%" }}>סגור</button>
             </div>
           </div>
         );
@@ -5575,7 +6891,7 @@ const importBackup = async (
       {showNewCustomerModalDayId !== null && (
         <div
           style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9999 }}
-          onClick={() => setShowNewCustomerModalDayId(null)}
+          onClick={() => { setShowNewCustomerModalDayId(null); setNewCustomerError(""); }}
         >
           <div
             style={{ background: "white", borderRadius: "16px", padding: "24px", width: "480px", maxWidth: "95%", boxShadow: "0 10px 30px rgba(0,0,0,0.25)", direction: "rtl" }}
@@ -5583,17 +6899,32 @@ const importBackup = async (
           >
             <h3 style={{ marginTop: 0 }}>לקוח חדש</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              <input placeholder="שם לקוח *" value={newCustomerName} onChange={e => setNewCustomerName(e.target.value)} style={inputStyle} />
-              <input placeholder="טלפון *" value={newCustomerPhone} onChange={e => setNewCustomerPhone(e.target.value)} style={inputStyle} />
+              <input placeholder="שם לקוח *" value={newCustomerName}
+                onChange={e => { setNewCustomerName(e.target.value); setNewCustomerError(""); }}
+                style={{ ...inputStyle, borderColor: newCustomerError && !newCustomerName ? "#ef4444" : undefined }} />
+              <input placeholder="טלפון *" value={newCustomerPhone}
+                onChange={e => { setNewCustomerPhone(e.target.value); setNewCustomerError(""); }}
+                style={{ ...inputStyle, borderColor: newCustomerError && !newCustomerPhone ? "#ef4444" : undefined }} />
               <input placeholder="תעודת זהות" value={newCustomerIdNumber} onChange={e => setNewCustomerIdNumber(e.target.value)} style={inputStyle} />
               {saleDays.find(d => d.id === showNewCustomerModalDayId)?.type === "walkin" && (
                 <select value={newCustomerType} onChange={e => setNewCustomerType(e.target.value as CustomerType)} style={inputStyle}>
                   <option value="1">1</option><option value="2">2</option><option value="3">3</option>
                 </select>
               )}
+              {newCustomerError && (
+                <div style={{ color: "#dc2626", fontSize: "13px", fontWeight: 600 }}>⚠️ {newCustomerError}</div>
+              )}
               <div style={{ display: "flex", gap: "10px" }}>
-                <button onClick={() => { const c = addCustomerForDay(showNewCustomerModalDayId!); if (c && activeSaleDay?.id === showNewCustomerModalDayId) setSelectedCustomer(c); setShowNewCustomerModalDayId(null); }} className="cc-btn" style={{ ...btn("primary"), flex: 1 }}>הוסף לקוח</button>
-                <button onClick={() => setShowNewCustomerModalDayId(null)} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>ביטול</button>
+                <button onClick={() => { setShowNewCustomerModalDayId(null); setNewCustomerError(""); }} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>ביטול</button>
+                <button onClick={() => {
+                  if (!newCustomerName.trim() && !newCustomerPhone.trim()) { setNewCustomerError("שם לקוח וטלפון הם שדות חובה"); return; }
+                  if (!newCustomerName.trim()) { setNewCustomerError("שם לקוח הוא שדה חובה"); return; }
+                  if (!newCustomerPhone.trim()) { setNewCustomerError("טלפון הוא שדה חובה"); return; }
+                  const c = addCustomerForDay(showNewCustomerModalDayId!);
+                  if (c && activeSaleDay?.id === showNewCustomerModalDayId) setSelectedCustomer(c);
+                  setShowNewCustomerModalDayId(null);
+                  setNewCustomerError("");
+                }} className="cc-btn" style={{ ...btn("primary"), flex: 1 }}>הוסף לקוח</button>
               </div>
             </div>
           </div>
@@ -5601,88 +6932,157 @@ const importBackup = async (
       )}
 
       {/* ═══ מודל תשלום צף ═══ */}
-      {showPaymentModal && (
-        <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.55)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9000 }}
-          onClick={() => { setShowPaymentModal(false); setPaymentModalError(""); }}>
-          <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "460px", maxWidth: "95%", boxShadow: "0 16px 40px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: "16px", direction: "rtl" }}
-            onClick={e => e.stopPropagation()}>
-            {/* כותרת */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h2 style={{ margin: 0, fontSize: "20px" }}>תשלום</h2>
-              <button onClick={() => { setShowPaymentModal(false); setPaymentModalError(""); }} className="cc-btn" style={{ ...iconBtn(), fontSize: "22px" }}>✕</button>
-            </div>
-            {selectedCustomer && <div style={{ fontSize: "15px", color: "#374151", fontWeight: 600 }}>לקוח: {selectedCustomer.name}</div>}
-            {paymentModalError && (
-              <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: "10px", padding: "10px 14px", color: "#dc2626", fontSize: "14px", fontWeight: 600 }}>
-                ⚠️ {paymentModalError}
+      {showPaymentModal && (() => {
+        const paid = modalPayments.reduce((s, p) => s + p.amount, 0);
+        const remaining = Math.round((finalTotal - paid) * 100) / 100;
+        const cashRec = Number(cashReceived) || 0;
+        const cashAmt = Math.min(cashRec, remaining);
+        const nonCashAmt = modalPaymentAmount === "" ? remaining : (Number(modalPaymentAmount) || 0);
+        const curAmt = paymentMethod === "cash" ? cashAmt : nonCashAmt;
+        const isLast = curAmt >= remaining - 0.005 && remaining > 0;
+        const mLabel = (m: string) => m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : "אשראי";
+        const closeModal = () => { setShowPaymentModal(false); setPaymentModalError(""); setModalPayments([]); setModalPaymentAmount(""); setCashReceived(""); };
+
+        const doPayNow = () => {
+          if (paymentMethod === "cash") {
+            if (!cashReceived || cashRec <= 0) { setPaymentModalError("יש להזין סכום שהתקבל"); return; }
+            const actualAmt = Math.round(cashAmt * 100) / 100;
+            const change = cashRec > remaining ? Math.round((cashRec - remaining) * 100) / 100 : 0;
+            const newPart: PaymentPart = { method: "cash", amount: actualAmt, cashReceived: cashRec, cashChange: change, installments: 1 };
+            const allParts = [...modalPayments, newPart];
+            const newRemaining = Math.round((finalTotal - allParts.reduce((s, p) => s + p.amount, 0)) * 100) / 100;
+            setPaymentModalError("");
+            if (newRemaining <= 0.005) { completeSale(allParts); }
+            else { setModalPayments(allParts); setCashReceived(""); }
+          } else {
+            if (nonCashAmt <= 0) { setPaymentModalError("יש להזין סכום לתשלום"); return; }
+            const actualAmt = Math.round(Math.min(nonCashAmt, remaining) * 100) / 100;
+            const newPart: PaymentPart = { method: paymentMethod as PaymentPart["method"], amount: actualAmt, installments: paymentMethod === "check" ? checkInstallments : creditInstallments };
+            const allParts = [...modalPayments, newPart];
+            const newRemaining = Math.round((finalTotal - allParts.reduce((s, p) => s + p.amount, 0)) * 100) / 100;
+            setPaymentModalError("");
+            if (newRemaining <= 0.005) { completeSale(allParts); }
+            else { setModalPayments(allParts); setModalPaymentAmount(""); }
+          }
+        };
+
+        return (
+          <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.55)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9000 }}
+            onClick={closeModal}>
+            <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "460px", maxWidth: "95%", boxShadow: "0 16px 40px rgba(0,0,0,0.3)", display: "flex", flexDirection: "column", gap: "14px", direction: "rtl" }}
+              onClick={e => e.stopPropagation()}>
+
+              {/* כותרת */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h2 style={{ margin: 0, fontSize: "20px" }}>תשלום</h2>
+                <button onClick={closeModal} className="cc-btn" style={{ ...iconBtn(), fontSize: "22px" }}>✕</button>
               </div>
-            )}
-            {/* סכום */}
-            <div style={{ background: "#f0fdf4", borderRadius: "12px", padding: "16px", textAlign: "center" }}>
-              {giftFreeQty > 0 && <div style={{ fontSize: "13px", color: "#7c3aed", marginBottom: "4px" }}>🎁 {giftBagProduct?.name} ×{giftFreeQty} מתנה</div>}
-              {discountAmount > 0 && <div style={{ fontSize: "13px", color: "#16a34a", marginBottom: "4px" }}>הנחה: −₪{discountAmount.toFixed(2)}</div>}
-              {paymentMethod === "cash" && roundingDiff !== 0 && <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "4px" }}>עיגול: {roundingDiff > 0 ? "+" : ""}₪{roundingDiff.toFixed(2)}</div>}
-              <div style={{ fontSize: "32px", fontWeight: 800, color: "#1e3a8a" }}>₪{effectiveFinalTotal.toFixed(2)}</div>
-              <div style={{ fontSize: "14px", color: "#6b7280" }}>לתשלום</div>
-            </div>
-            {/* שיטת תשלום */}
-            <div style={{ display: "flex", gap: "8px" }}>
-              {(["cash","check","credit"] as const).map(m => (
-                <button key={m} onClick={() => { setPaymentMethod(m); setShowCreditModal(false); setPaymentModalError(""); }}
-                  className="cc-btn" style={segmentBtn(paymentMethod === m)}>
-                  {m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : "אשראי"}
-                </button>
-              ))}
-            </div>
-            {/* מזומן */}
-            {paymentMethod === "cash" && (
-              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                <input type="number" placeholder="סכום שהתקבל" value={cashReceived} onChange={e => setCashReceived(e.target.value)}
-                  style={{ flex: 1, padding: "12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "15px", textAlign: "right" }} />
-                <span style={{ fontWeight: 700, fontSize: "15px", color: "#16a34a", whiteSpace: "nowrap" }}>
-                  עודף: ₪{Math.max(0, Number(cashReceived || 0) - effectiveFinalTotal).toFixed(2)}
-                </span>
-              </div>
-            )}
-            {/* צ'ק / אשראי — תשלומים */}
-            {(paymentMethod === "check" || paymentMethod === "credit") && (
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <span style={{ fontSize: "14px", fontWeight: 600 }}>מספר תשלומים:</span>
-                <select value={paymentMethod === "check" ? checkInstallments : creditInstallments}
-                  onChange={e => paymentMethod === "check" ? setCheckInstallments(Number(e.target.value)) : setCreditInstallments(Number(e.target.value))}
-                  style={{ padding: "8px 12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "14px" }}>
-                  <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
-                </select>
-              </div>
-            )}
-            {/* כפתורי פעולה */}
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button onClick={() => { setShowPaymentModal(false); setPaymentModalError(""); }}
-                className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>
-                חזרה לקופה
-              </button>
-              {paymentMethod === "credit" ? (
-                <button onClick={() => { setShowPaymentModal(false); setShowCreditModal(true); }}
-                  className="cc-btn" style={{ ...btn("success"), flex: 2 }}>
-                  שלם באשראי
-                </button>
-              ) : (
-                <button onClick={() => {
-                  if (paymentMethod === "cash") {
-                    if (!cashReceived || cashReceived.trim() === "") { setPaymentModalError("יש להזין את הסכום שהתקבל"); return; }
-                    if (Number(cashReceived) < effectiveFinalTotal) { setPaymentModalError(`הסכום שהתקבל (₪${Number(cashReceived).toFixed(2)}) נמוך מהסכום לתשלום (₪${effectiveFinalTotal.toFixed(2)})`); return; }
-                  }
-                  setPaymentModalError("");
-                  completeSale();
-                }}
-                  className="cc-btn" style={{ ...btn("primary", "lg"), flex: 2 }}>
-                  ✓ אישור וסיום עסקה
-                </button>
+
+              {selectedCustomer && <div style={{ fontSize: "15px", color: "#374151", fontWeight: 600 }}>לקוח: {selectedCustomer.name}</div>}
+
+              {paymentModalError && (
+                <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: "10px", padding: "10px 14px", color: "#dc2626", fontSize: "14px", fontWeight: 600 }}>
+                  ⚠️ {paymentModalError}
+                </div>
               )}
+
+              {/* סכום כולל */}
+              <div style={{ background: "#f0fdf4", borderRadius: "12px", padding: "14px", textAlign: "center" }}>
+                {giftFreeQty > 0 && <div style={{ fontSize: "13px", color: "#7c3aed", marginBottom: "4px" }}>🎁 {giftBagProduct?.name} ×{giftFreeQty} מתנה</div>}
+                {discountAmount > 0 && <div style={{ fontSize: "13px", color: "#16a34a", marginBottom: "4px" }}>הנחה: −₪{discountAmount.toFixed(2)}</div>}
+                <div style={{ fontSize: "30px", fontWeight: 800, color: "#1e3a8a" }}>₪{finalTotal.toFixed(2)}</div>
+                <div style={{ fontSize: "13px", color: "#6b7280" }}>סה"כ לתשלום</div>
+              </div>
+
+              {/* תשלומים שבוצעו + יתרה */}
+              {modalPayments.length > 0 && (
+                <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "10px", padding: "10px 14px", display: "flex", flexDirection: "column", gap: "5px" }}>
+                  {modalPayments.map((p, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: "13px" }}>
+                      <span style={{ color: "#16a34a", fontWeight: 600 }}>✓ {mLabel(p.method)}</span>
+                      <span style={{ fontWeight: 700 }}>₪{p.amount.toFixed(2)}</span>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: "15px", color: "#0891b2", borderTop: "1px solid #bae6fd", paddingTop: "6px", marginTop: "2px" }}>
+                    <span>נותר לתשלום</span>
+                    <span>₪{remaining.toFixed(2)}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* אמצעי תשלום */}
+              <div style={{ display: "flex", gap: "8px" }}>
+                {(["cash","check","credit"] as const).map(m => (
+                  <button key={m} onClick={() => { setPaymentMethod(m); setCashReceived(""); setPaymentModalError(""); }}
+                    className="cc-btn" style={segmentBtn(paymentMethod === m)}>
+                    {mLabel(m)}
+                  </button>
+                ))}
+              </div>
+
+              {/* מזומן — סכום שהתקבל (= סכום התשלום) */}
+              {paymentMethod === "cash" && (
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <input type="number" placeholder={`₪${remaining.toFixed(2)}`} value={cashReceived}
+                    onChange={e => { setCashReceived(e.target.value); setPaymentModalError(""); }}
+                    autoFocus
+                    style={{ flex: 1, padding: "12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "18px", textAlign: "right" }} />
+                  <span style={{ fontWeight: 700, fontSize: "14px", whiteSpace: "nowrap", color: cashRec > remaining ? "#16a34a" : cashRec > 0 ? "#0891b2" : "#9ca3af" }}>
+                    {cashRec > remaining
+                      ? `עודף: ₪${(cashRec - remaining).toFixed(2)}`
+                      : cashRec > 0 && cashRec < remaining
+                        ? `יתרה: ₪${(remaining - cashRec).toFixed(2)}`
+                        : `לתשלום: ₪${remaining.toFixed(2)}`}
+                  </span>
+                </div>
+              )}
+
+              {/* אשראי / צ'ק — סכום לתשלום */}
+              {(paymentMethod === "check" || paymentMethod === "credit") && (
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <span style={{ fontSize: "13px", fontWeight: 600, whiteSpace: "nowrap", color: "#374151" }}>סכום לתשלום:</span>
+                  <input type="number" placeholder={`₪${remaining.toFixed(2)}`} value={modalPaymentAmount}
+                    onChange={e => { setModalPaymentAmount(e.target.value); setPaymentModalError(""); }}
+                    autoFocus
+                    style={{ flex: 1, padding: "10px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "15px", textAlign: "right" }} />
+                </div>
+              )}
+
+              {/* תשלומים (צ'ק / אשראי) */}
+              {(paymentMethod === "check" || paymentMethod === "credit") && (
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "14px", fontWeight: 600 }}>מספר תשלומים:</span>
+                  <select value={paymentMethod === "check" ? checkInstallments : creditInstallments}
+                    onChange={e => paymentMethod === "check" ? setCheckInstallments(Number(e.target.value)) : setCreditInstallments(Number(e.target.value))}
+                    style={{ padding: "8px 12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "14px" }}>
+                    <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
+                  </select>
+                </div>
+              )}
+
+              {/* כפתורים */}
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button onClick={closeModal} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>חזרה לקופה</button>
+                {paymentMethod === "credit" && (modalPaymentAmount === "" || Number(modalPaymentAmount) >= remaining - 0.005) ? (
+                  <button onClick={() => {
+                    creditPriorPaymentsRef.current = [...modalPayments];
+                    creditChargeAmountRef.current = remaining;
+                    setShowPaymentModal(false);
+                    setShowCreditModal(true);
+                  }}
+                    className="cc-btn" style={{ ...btn("success"), flex: 2 }}>
+                    שלם באשראי
+                  </button>
+                ) : (
+                  <button onClick={doPayNow} className="cc-btn" style={{ ...btn("primary", "lg"), flex: 2 }}>
+                    {isLast ? "✓ אישור וסיום עסקה" : `שלם ₪${curAmt > 0 ? curAmt.toFixed(2) : "..."} ←`}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* מודאל החזרת מוצר */}
       {showReturnModal && (() => {
@@ -5774,18 +7174,31 @@ const importBackup = async (
                       );
                     })}
                   </div>
-                  {returnTotal > 0 && (
-                    <div style={{ borderTop: "2px solid #f1f5f9", paddingTop: "12px", marginTop: "12px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: "16px", marginBottom: "12px" }}>
-                        <span>סה"כ להחזר:</span>
-                        <span style={{ color: "#dc2626" }}>₪{returnTotal.toFixed(2)}</span>
+                  {(() => {
+                    const fullQtys = Object.fromEntries(sourceTx.items.map(i => [i.id, i.qty - (returnedQtyMap[sourceTx.id]?.[i.id] ?? 0)]).filter(([, v]) => (v as number) > 0));
+                    const fullGross = sourceTx.items.reduce((s, i) => s + i.price * (fullQtys[i.id] ?? 0), 0);
+                    const fullTotal = fullGross * (1 - (sourceTx.discountPercent ?? 0) / 100);
+                    return (
+                      <div style={{ borderTop: "2px solid #f1f5f9", paddingTop: "12px", marginTop: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                        {returnTotal > 0 && (
+                          <>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: "16px" }}>
+                              <span>סה"כ להחזר:</span>
+                              <span style={{ color: "#dc2626" }}>₪{returnTotal.toFixed(2)}</span>
+                            </div>
+                            <button onClick={() => processReturn(sourceTx, returnQtys)}
+                              className="cc-btn" style={{ ...btn("danger", "lg"), width: "100%" }}>
+                              ✓ בצע החזרה
+                            </button>
+                          </>
+                        )}
+                        <button onClick={() => processReturn(sourceTx, fullQtys)}
+                          className="cc-btn" style={{ ...btn("warning", "lg"), width: "100%" }}>
+                          ↩ החזר עסקה מלאה (₪{fullTotal.toFixed(2)})
+                        </button>
                       </div>
-                      <button onClick={() => processReturn(sourceTx, returnQtys)}
-                        className="cc-btn" style={{ ...btn("danger", "lg"), width: "100%" }}>
-                        ✓ בצע החזרה
-                      </button>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </>
               )}
             </div>
@@ -5849,7 +7262,7 @@ const importBackup = async (
           }}>
             <div style={{ padding: "16px 20px", borderBottom: "1px solid #e2e8f0", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
               <span style={{ fontWeight: 700, fontSize: "18px" }}>
-                תשלום באשראי — ₪{effectiveFinalTotal.toFixed(2)} · {creditInstallments} תשלומים
+                תשלום באשראי — ₪{(creditChargeAmountRef.current || effectiveFinalTotal).toFixed(2)} · {creditInstallments} תשלומים
               </span>
               <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); setCreditPaymentSuccess(false); }}
                 className="cc-btn" style={{ ...iconBtn(), fontSize: "22px" }}>✕</button>
@@ -5900,6 +7313,65 @@ const importBackup = async (
         </div>
       )}
 
+      {/* ══ מודל הוספת מלאי מחסן ══ */}
+      {whEntryModalItemId != null && (() => {
+        const item = warehouseItems.find(w => w.id === whEntryModalItemId);
+        if (!item) return null;
+        const nowStr = new Date().toLocaleString("sv-SE").slice(0, 16);
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 10100, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setWhEntryModalItemId(null)}>
+            <div style={{ background: "white", borderRadius: "20px", padding: "28px 32px", maxWidth: "460px", width: "90%", direction: "rtl", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}
+              onClick={e => e.stopPropagation()}>
+              <h3 style={{ margin: "0 0 20px", fontSize: "18px", color: "#111827" }}>הוספת כניסת מלאי</h3>
+              {/* שדות תצוגה */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "10px", marginBottom: "20px" }}>
+                {[
+                  { label: "קוד מוצר", value: item.code },
+                  { label: "שם מוצר", value: item.name },
+                  { label: "ספק", value: item.supplier ?? "—" },
+                ].map(f => (
+                  <div key={f.label} style={{ background: "#f8fafc", borderRadius: "10px", padding: "10px 12px" }}>
+                    <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "3px" }}>{f.label}</div>
+                    <div style={{ fontSize: "14px", fontWeight: 700, color: "#374151" }}>{f.value}</div>
+                  </div>
+                ))}
+              </div>
+              {/* שדות קלט */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                <div>
+                  <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "6px" }}>כמות *</label>
+                  <input type="number" min={1} value={whEntryQty} onChange={e => setWhEntryQty(e.target.value)}
+                    placeholder="הזן כמות" autoFocus
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "15px", fontWeight: 700, boxSizing: "border-box" as const }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "6px" }}>
+                    תאריך ושעה <span style={{ fontWeight: 400, color: "#9ca3af" }}>(ריק = עכשיו: {nowStr})</span>
+                  </label>
+                  <input type="datetime-local" value={whEntryDatetime} onChange={e => setWhEntryDatetime(e.target.value)}
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "14px", boxSizing: "border-box" as const }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "6px" }}>הערות</label>
+                  <input value={whEntryNotes} onChange={e => setWhEntryNotes(e.target.value)}
+                    placeholder="למשל: משלוח ספק, הוספה ידנית..."
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "14px", boxSizing: "border-box" as const }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "10px", marginTop: "24px" }}>
+                <button onClick={() => setWhEntryModalItemId(null)} className="cc-btn" style={btn("secondary", "md")}>
+                  ביטול
+                </button>
+                <button onClick={saveWarehouseEntry} className="cc-btn" style={{ ...btn("success", "md"), flex: 1 }}>
+                  שמור כניסה
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ══ ConfirmDialog ══ */}
       {confirmDialog && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -5914,13 +7386,13 @@ const importBackup = async (
             )}
             <p style={{ margin: "0 0 24px", color: "#6b7280", fontSize: "14px", whiteSpace: "pre-line" }}>{confirmDialog.message}</p>
             <div style={{ display: "flex", gap: "10px", justifyContent: "center" }}>
-              <button onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
-                className="cc-btn" style={btn(confirmDialog.confirmVariant ?? "danger", "md")}>
-                {confirmDialog.confirmLabel ?? "אישור"}
-              </button>
               <button onClick={() => setConfirmDialog(null)}
                 className="cc-btn" style={btn("secondary", "md")}>
                 ביטול
+              </button>
+              <button onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
+                className="cc-btn" style={btn(confirmDialog.confirmVariant ?? "danger", "md")}>
+                {confirmDialog.confirmLabel ?? "אישור"}
               </button>
             </div>
           </div>
