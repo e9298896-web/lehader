@@ -66,6 +66,18 @@ const formatDateIL = (d: string) => {
 };
 const formatTransactionCount = (n: number) => n === 1 ? "עסקה אחת" : `${n} עסקאות`;
 
+// ממיין לפי שם משפחה (מילה אחרונה בשם) ואז שם פרטי
+const nameSortKey = (fullName: string): [string, string] => {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return [parts[0] ?? "", ""];
+  return [parts[parts.length - 1], parts.slice(0, -1).join(" ")];
+};
+const compareByLastFirst = (nameA: string, nameB: string) => {
+  const [lastA, firstA] = nameSortKey(nameA);
+  const [lastB, firstB] = nameSortKey(nameB);
+  return lastA.localeCompare(lastB, "he") || firstA.localeCompare(firstB, "he");
+};
+
 const getStorageUsage = () => {
   let chars = 0;
   for (const key of Object.keys(localStorage)) {
@@ -208,6 +220,7 @@ type PreOrder = {
   notes: string;
   items: CartItem[];
   status: "pending" | "paid";
+  nedarimId?: number;
 };
 
 type SaleDayType = "preorder" | "walkin" | "walkin-nodiscount" | "open";
@@ -257,6 +270,10 @@ type SaleDay = {
   transactions: Transaction[];
   inventory?: InventoryItem[];
   priceLevels?: number[];
+  nedarimStation?: string;
+  nedarimLastId?: number;
+  printNote?: string;
+  paymentCategory?: string;
 };
 
 type Expense = {
@@ -491,6 +508,9 @@ export default function App() {
   const [ordersFilter, setOrdersFilter] = useState<"all" | "pending" | "paid">("all");
   const [showSaleActionsMenu, setShowSaleActionsMenu] = useState(false);
   const [showOrdersActionsMenu, setShowOrdersActionsMenu] = useState(false);
+  const [showStationModal, setShowStationModal] = useState(false);
+  const [showPrintNoteModal, setShowPrintNoteModal] = useState(false);
+  const [showPaymentCategoryModal, setShowPaymentCategoryModal] = useState(false);
   const [showCustomersActionsMenu, setShowCustomersActionsMenu] = useState(false);
   const [txSearch, setTxSearch] = useState("");
   const [editingCustomerIdx, setEditingCustomerIdx] = useState<number | null>(null);
@@ -532,9 +552,20 @@ export default function App() {
   const [reportTab, setReportTab] = useState<"sales" | "breakdown" | "inventory">("sales");
   const [breakdownTab, setBreakdownTab] = useState<"category" | "customer" | "seller">("category");
   const [settingsTab, setSettingsTab] = useState<"sellers" | "backup" | "integrity" | "log" | "alerts" | "payment" | "security">("sellers");
-  const [nedarimConfig, setNedarimConfig] = useState<{ mosad: string; apiValid: string }>(() => {
-    try { const s = localStorage.getItem("nedarimConfig"); const p = s ? JSON.parse(s) : {}; return { mosad: p.mosad ?? "", apiValid: p.apiValid ?? "" }; } catch { return { mosad: "", apiValid: "" }; }
+  const [nedarimConfig, setNedarimConfig] = useState<{ mosad: string; apiValid: string; formMosadId: string; formApiKey: string; formTofesId: string }>(() => {
+    try {
+      const s = localStorage.getItem("nedarimConfig");
+      const p = s ? JSON.parse(s) : {};
+      return {
+        mosad: p.mosad ?? "",
+        apiValid: p.apiValid ?? "",
+        formMosadId: p.formMosadId ?? "",
+        formApiKey: p.formApiKey ?? "",
+        formTofesId: p.formTofesId ?? "392",
+      };
+    } catch { return { mosad: "", apiValid: "", formMosadId: "", formApiKey: "", formTofesId: "392" }; }
   });
+  const [nedarimSyncing, setNedarimSyncing] = useState(false);
   const [emailJSConfig, setEmailJSConfig] = useState<{ publicKey: string; serviceId: string; templateId: string; recipientEmail: string; saleLowStockThreshold: number; gmailClientId: string }>(() => {
     try { const s = localStorage.getItem("emailJSConfig"); const p = s ? JSON.parse(s) : {}; return { publicKey: p.publicKey ?? "", serviceId: p.serviceId ?? "", templateId: p.templateId ?? "", recipientEmail: p.recipientEmail ?? "", saleLowStockThreshold: p.saleLowStockThreshold ?? p.lowStockThreshold ?? 3, gmailClientId: p.gmailClientId ?? "" }; } catch { return { publicKey: "", serviceId: "", templateId: "", recipientEmail: "", saleLowStockThreshold: 3, gmailClientId: "" }; }
   });
@@ -1118,6 +1149,10 @@ export default function App() {
   };
 
   const sendCreditPayment = () => {
+    if (!nedarimConfig.mosad || !nedarimConfig.apiValid) {
+      setCreditPaymentError("סליקת אשראי לא מוגדרת — יש למלא מספר מוסד וקוד API בהגדרות ← סליקת אשראי.");
+      return;
+    }
     const iframe = document.getElementById("NedarimFrame") as HTMLIFrameElement;
     if (!iframe?.contentWindow) return;
     setCreditPaymentProcessing(true);
@@ -1138,7 +1173,7 @@ export default function App() {
         Mail: "",
         Amount: (creditChargeAmountRef.current || effectiveFinalTotal).toFixed(2),
         Tashlumim: String(creditInstallments),
-        Groupe: "",
+        Groupe: activeSaleDay?.paymentCategory ?? "",
         Comment: "",
         CallBack: "",
         Tokef: ""
@@ -1784,7 +1819,7 @@ export default function App() {
     });
   };
 
-  const buildOrderHtml = (order: PreOrder, dayName: string) => {
+  const buildOrderHtml = (order: PreOrder, dayName: string, printNote?: string) => {
     const saleDay = saleDays.find(d => d.preOrders.some(o => o.id === order.id));
     const products = saleDay?.products ?? activeProducts;
     const bagProduct = products.find(p => p.isGiftBag) ?? null;
@@ -1824,6 +1859,7 @@ export default function App() {
         </table>
         <div class="total">סה"כ לתשלום: ₪${total.toFixed(2)}</div>
         ${giftLine}
+        ${printNote ? `<div class="print-note">${printNote}</div>` : ""}
       </div>`;
   };
 
@@ -1835,6 +1871,7 @@ export default function App() {
     .order-header { font-size: 16px; margin-bottom: 6px; }
     .day-name { font-size: 18px; font-weight: bold; margin-bottom: 8px; border-bottom: 2px solid #ccc; padding-bottom: 6px; }
     .notes { color: #059669; font-size: 13px; margin-bottom: 8px; }
+    .print-note { background: #fef9c3; border: 1px solid #fde047; border-radius: 6px; padding: 6px 10px; font-size: 13px; color: #854d0e; margin-top: 10px; white-space: pre-line; }
     table { width: 100%; border-collapse: collapse; margin-top: 8px; }
     th, td { padding: 6px 8px; border: 1px solid #ddd; text-align: right; }
     th { background: #f1f5f9; font-weight: bold; }
@@ -1842,18 +1879,18 @@ export default function App() {
     .gift-note { font-weight: bold; font-size: 15px; margin-top: 8px; color: #7c3aed; border: 2px dashed #7c3aed; padding: 6px 10px; border-radius: 6px; text-align: center; }
   `;
 
-  const printSingleOrder = (order: PreOrder, dayName: string) => {
+  const printSingleOrder = (order: PreOrder, dayName: string, printNote?: string) => {
     const w = window.open("", "_blank", "width=650,height=800");
     if (!w) return;
-    w.document.write(`<html dir="rtl"><head><title>הזמנה - ${order.customerName}</title><style>${printStyles}</style></head><body>${buildOrderHtml(order, dayName)}</body></html>`);
+    w.document.write(`<html dir="rtl"><head><title>הזמנה - ${order.customerName}</title><style>${printStyles}</style></head><body>${buildOrderHtml(order, dayName, printNote)}</body></html>`);
     w.document.close();
     w.focus();
     w.print();
     w.close();
   };
 
-  const printAllOrdersList = (orders: { order: PreOrder; dayName: string }[]) => {
-    const body = orders.map(({ order, dayName }) => buildOrderHtml(order, dayName)).join("");
+  const printAllOrdersList = (orders: { order: PreOrder; dayName: string; printNote?: string }[]) => {
+    const body = orders.map(({ order, dayName, printNote }) => buildOrderHtml(order, dayName, printNote)).join("");
     const w = window.open("", "_blank", "width=650,height=900");
     if (!w) return;
     w.document.write(`<html dir="rtl"><head><title>כל ההזמנות</title><style>${printStyles}</style></head><body>${body}</body></html>`);
@@ -1899,6 +1936,8 @@ export default function App() {
     const FIXED_COLS = new Set([
       "תאריך יצירה", "שם משפחה", "שם פרטי",
       "טלפון", "טלפון נוסף", "מייל", "הערות",
+      "מזהה", "תאריך עדכון", "שם עמדה", "סיכום הזמנה",
+      "תחנת חלוקה", "סה\"כ לתשלום", "מספר עסקה",
     ]);
 
     // collect all product column names from headers
@@ -2011,8 +2050,8 @@ export default function App() {
 
         return {
           ...day,
-          preOrders: [...day.preOrders, ...uniqueOrders],
-          customers: [...existingCustomers, ...newCustomers],
+          preOrders: [...day.preOrders, ...uniqueOrders].sort((a, b) => compareByLastFirst(a.customerName, b.customerName)),
+          customers: [...existingCustomers, ...newCustomers].sort((a, b) => compareByLastFirst(a.name, b.name)),
           products: [...existingProducts, ...newProducts],
         };
       })
@@ -2020,6 +2059,216 @@ export default function App() {
 
     addToast(`יובאו ${importedOrders.length} הזמנות בהצלחה`, "success");
     e.target.value = "";
+  };
+
+  const fetchNedarimFormRecords = async (
+    mosad: string,
+    apiKey: string,
+    tofesId: string,
+    lastId: number
+  ): Promise<Record<string, string>[]> => {
+    const all: Record<string, string>[] = [];
+    let cursor = lastId;
+    while (true) {
+      const body = new URLSearchParams({
+        Action: "GetJson",
+        MosadId: mosad,
+        ApiPassword: apiKey,
+        TofesId: tofesId,
+        MaxId: "500",
+        LastId: String(cursor),
+        GetJsonParam: JSON.stringify({
+          Field1: "Field1", Field2: "Field2", Field3: "Field3", Field4: "Field4",
+          Field25: "Field25", Field3Max: "Field3Max", Field2Max: "Field2Max",
+          Field95: "Field95", Field70: "Field70", UpdateDate: "UpdateDate",
+        }),
+      });
+      const res = await fetch("https://matara.pro/nedarimplus/Forms/Manage.aspx", { method: "POST", body });
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        throw new Error(data?.Message || "שגיאה בקבלת נתונים מנדרים פלוס");
+      }
+      if (data.length === 0) break;
+      all.push(...data);
+      cursor = Number(data[data.length - 1].ID);
+    }
+    return all;
+  };
+
+  const importPreOrdersFromNedarimApi = async (saleDayId: number) => {
+    if (!nedarimConfig.formMosadId || !nedarimConfig.formApiKey) {
+      addToast("יש להגדיר מספר מוסד ומפתח API למשיכת טפסים בהגדרות", "warning");
+      return;
+    }
+    const targetDay = saleDays.find(d => d.id === saleDayId);
+    const station = (targetDay?.nedarimStation || "").trim();
+
+    setNedarimSyncing(true);
+    try {
+      const records = await fetchNedarimFormRecords(
+        nedarimConfig.formMosadId,
+        nedarimConfig.formApiKey,
+        nedarimConfig.formTofesId || "392",
+        targetDay?.nedarimLastId || 0
+      );
+
+      if (records.length === 0) {
+        addToast("אין הזמנות חדשות למשוך", "info");
+        return;
+      }
+
+      // סורקים את כל הרשומות שחזרו (כל התחנות) כדי לקבוע עד לאיזה מזהה נסרק, ואז מסננים רק את התחנה של יום זה
+      let maxId = targetDay?.nedarimLastId || 0;
+      for (const rec of records) {
+        const recId = Number(rec.ID);
+        if (Number.isFinite(recId) && recId > maxId) maxId = recId;
+      }
+      const stationRecords = station ? records.filter(r => (r.Field95 || "").trim() === station) : records;
+
+      const dayProducts = targetDay?.products ?? activeProducts;
+
+      type NedarimOrderItem = { ProductId?: number; Name?: string; Category?: string; Qty?: number; Price?: number };
+      const parseItems = (rec: Record<string, string>): NedarimOrderItem[] => {
+        try {
+          const parsed = JSON.parse(rec.Field2Max || "[]");
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      };
+
+      // מוצרים חדשים שמופיעים בהזמנות אך לא קיימים ביום המכירה — שם, מחיר וקטגוריה נלקחים מההזמנה עצמה
+      const productCandidates = new Map<string, { price: number; category: string }>();
+      for (const rec of stationRecords) {
+        for (const it of parseItems(rec)) {
+          const name = String(it.Name ?? "").trim();
+          if (!name || productCandidates.has(name)) continue;
+          productCandidates.set(name, { price: Number(it.Price) || 0, category: String(it.Category ?? "כללי") });
+        }
+      }
+
+      const importedOrders: PreOrder[] = [];
+      let idCounter = Date.now();
+
+      for (const rec of stationRecords) {
+        const recId = Number(rec.ID);
+
+        const firstName = (rec.Field2 || "").trim();
+        const lastName = (rec.Field1 || "").trim();
+        const customerName = [firstName, lastName].filter(Boolean).join(" ");
+        if (!customerName) continue;
+
+        const customerPhone = (rec.Field3 || "").replace(/\D/g, "");
+        const notes = [
+          (rec.Field3Max || "").trim(),
+          rec.Field95 ? `תחנת חלוקה: ${rec.Field95}` : "",
+          rec.Field25 ? `מייל: ${rec.Field25}` : "",
+        ].filter(Boolean).join("\n");
+
+        const items: CartItem[] = [];
+        let itemIdSuffix = 0;
+        for (const it of parseItems(rec)) {
+          const name = String(it.Name ?? "").trim();
+          const qty = Number(it.Qty) || 0;
+          if (!name || qty <= 0) continue;
+          const matched = dayProducts.find(
+            (p) => p.name === name || name.includes(p.name) || p.name.includes(name)
+          );
+          items.push({
+            id: matched ? matched.id : -(idCounter + itemIdSuffix++),
+            name,
+            price: matched?.price ?? (Number(it.Price) || 0),
+            qty,
+          });
+        }
+        if (items.length === 0) continue;
+
+        importedOrders.push({
+          id: idCounter++,
+          customerName,
+          customerPhone,
+          notes,
+          items,
+          status: "pending",
+          nedarimId: Number.isFinite(recId) ? recId : undefined,
+        });
+      }
+
+      setSaleDays((prev) =>
+        prev.map((day) => {
+          if (day.id !== saleDayId) return day;
+          const existingCustomers = day.customers ?? [];
+          const newCustomers: Customer[] = [];
+          for (const order of importedOrders) {
+            const alreadyExists = existingCustomers.some(c =>
+              (order.customerPhone && c.phone === order.customerPhone) ||
+              c.name === order.customerName
+            );
+            const alreadyAdded = newCustomers.some(c =>
+              (order.customerPhone && c.phone === order.customerPhone) ||
+              c.name === order.customerName
+            );
+            if (!alreadyExists && !alreadyAdded) {
+              newCustomers.push({
+                id: Date.now() * 1000 + newCustomers.length,
+                name: order.customerName,
+                phone: order.customerPhone,
+                idNumber: "",
+                customerType: "3",
+              });
+            }
+          }
+
+          const existingProducts = day.products ?? [];
+          const newProducts: Product[] = [];
+          let pIdCounter = Date.now() + 10000;
+          for (const [name, info] of productCandidates) {
+            const alreadyExists = existingProducts.some(p =>
+              p.name === name || name.includes(p.name) || p.name.includes(name)
+            );
+            if (!alreadyExists) {
+              newProducts.push({
+                id: pIdCounter++,
+                name,
+                price: info.price,
+                category: info.category,
+                stock: 0,
+              });
+            }
+          }
+
+          const existingNedarimIds = new Set(
+            (day.preOrders ?? []).map(o => o.nedarimId).filter((v): v is number => v != null)
+          );
+          const uniqueOrders = importedOrders.filter(o => o.nedarimId == null || !existingNedarimIds.has(o.nedarimId));
+          const skipped = importedOrders.length - uniqueOrders.length;
+          if (skipped > 0) addToast(`${skipped} הזמנות כבר יובאו בעבר ולא יובאו שנית. יובאו ${uniqueOrders.length} הזמנות חדשות.`, "warning");
+
+          return {
+            ...day,
+            nedarimLastId: maxId,
+            preOrders: [...day.preOrders, ...uniqueOrders].sort((a, b) => compareByLastFirst(a.customerName, b.customerName)),
+            customers: [...existingCustomers, ...newCustomers].sort((a, b) => compareByLastFirst(a.name, b.name)),
+            products: [...existingProducts, ...newProducts],
+          };
+        })
+      );
+
+      if (importedOrders.length === 0) {
+        addToast(
+          station
+            ? `נמשכו ${records.length} רשומות חדשות מנדרים פלוס, אך אף אחת לא שייכת לתחנה "${station}"`
+            : "נמשכו רשומות חדשות מנדרים פלוס, אך לא נמצאו בהן הזמנות תקינות",
+          "info"
+        );
+      } else {
+        addToast(`נמשכו ${importedOrders.length} הזמנות מנדרים פלוס בהצלחה`, "success");
+      }
+    } catch (err) {
+      addToast(`שגיאה במשיכת הזמנות מנדרים פלוס: ${err instanceof Error ? err.message : String(err)}`, "error");
+    } finally {
+      setNedarimSyncing(false);
+    }
   };
 
 
@@ -2494,7 +2743,7 @@ const importBackup = async (
       if (backup.pendingSales) setPendingSales(backup.pendingSales as typeof pendingSales);
       if (backup.activityLog) setActivityLog(backup.activityLog as typeof activityLog);
       if (backup.emailJSConfig) setEmailJSConfig(backup.emailJSConfig as typeof emailJSConfig);
-      if (backup.nedarimConfig) setNedarimConfig(backup.nedarimConfig as typeof nedarimConfig);
+      if (backup.nedarimConfig) setNedarimConfig(prev => ({ ...prev, ...(backup.nedarimConfig as Partial<typeof nedarimConfig>) }));
       if (backup.expenses) setExpenses(backup.expenses as typeof expenses);
       if (backup.workerExpenses) setWorkerExpenses(backup.workerExpenses as typeof workerExpenses);
       logActivity(`שחזור גיבוי — ${file.name}`);
@@ -3566,10 +3815,124 @@ const importBackup = async (
                               <button onClick={() => { setAdminTab("inventory"); setInventoryAdminTab("inventory"); setInventorySelectedDayId(detailDay.id); setInventoryStep("planning"); }} className="cc-btn" style={btn("secondary")}>
                                 📦 פתח במלאי
                               </button>
+                              {detailDay.type === "preorder" && (
+                                <button onClick={() => setShowStationModal(true)} className="cc-btn" style={btn("secondary")}>
+                                  🎯 בחירת תחנת חלוקה{detailDay.nedarimStation ? `: ${detailDay.nedarimStation}` : ""}
+                                </button>
+                              )}
+                              <button onClick={() => setShowPaymentCategoryModal(true)} className="cc-btn" style={btn("secondary")}>
+                                💳 קטגוריית סליקה{detailDay.paymentCategory ? `: ${detailDay.paymentCategory}` : ""}
+                              </button>
                             </div>
                           </div>
                         );
                       })()}
+
+                      {/* ══ חלון בחירת תחנת חלוקה ══ */}
+                      {showStationModal && detailDay && (
+                        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10020, display: "flex", alignItems: "center", justifyContent: "center" }}
+                          onClick={() => setShowStationModal(false)}>
+                          <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "480px", maxWidth: "95%", direction: "rtl", boxShadow: "0 16px 40px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" }}
+                            onClick={e => e.stopPropagation()}>
+                            <h3 style={{ margin: "0 0 20px", fontSize: "17px" }}>בחירת תחנת חלוקה — {detailDay.name}</h3>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                              <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>תחנת חלוקה (למשיכה מנדרים פלוס)</label>
+                              <input
+                                type="text"
+                                placeholder="לדוגמה: נאות עילית — השאירו ריק כדי למשוך את כל התחנות"
+                                value={detailDay.nedarimStation ?? ""}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  setSaleDays(prev => prev.map(d => d.id === detailDay.id ? { ...d, nedarimStation: val } : d));
+                                }}
+                                style={inputStyle}
+                              />
+                              <span style={{ fontSize: "12px", color: "#6b7280" }}>
+                                כאשר "משוך מנדרים פלוס" מופעל מתוך יום זה, ייובאו רק הזמנות שערך "תחנת חלוקה" שלהן תואם בדיוק לשם שהוגדר כאן.
+                              </span>
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "4px" }}>
+                                <span style={{ fontSize: "12px", color: "#6b7280" }}>
+                                  מעקב סנכרון: {detailDay.nedarimLastId ? `נסרק עד רשומה ${detailDay.nedarimLastId}` : "טרם בוצע סנכרון"}
+                                </span>
+                                {!!detailDay.nedarimLastId && (
+                                  <button
+                                    onClick={() => showConfirm({
+                                      title: "איפוס מעקב סנכרון",
+                                      message: `בסנכרון הבא עבור "${detailDay.name}" יימשכו שוב כל הרשומות מההתחלה (כולל כאלו שכבר יובאו) — יבוצע דילוג אוטומטי על כפולות. להמשיך?`,
+                                      confirmLabel: "איפוס",
+                                      confirmVariant: "danger",
+                                      onConfirm: () => setSaleDays(prev => prev.map(d => d.id === detailDay.id ? { ...d, nedarimLastId: 0 } : d)),
+                                    })}
+                                    className="cc-btn" style={btn("ghost", "sm")}>אפס מעקב</button>
+                                )}
+                              </div>
+                            </div>
+                            <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
+                              <button onClick={() => setShowStationModal(false)} className="cc-btn" style={{ ...btn("primary"), flex: 1 }}>סגור</button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ══ חלון הוספת הערה להדפסה ══ */}
+                      {showPrintNoteModal && detailDay && (
+                        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10020, display: "flex", alignItems: "center", justifyContent: "center" }}
+                          onClick={() => setShowPrintNoteModal(false)}>
+                          <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "480px", maxWidth: "95%", direction: "rtl", boxShadow: "0 16px 40px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" }}
+                            onClick={e => e.stopPropagation()}>
+                            <h3 style={{ margin: "0 0 20px", fontSize: "17px" }}>הערה לדף ההזמנה המודפס — {detailDay.name}</h3>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                              <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>הערה</label>
+                              <textarea
+                                placeholder="לדוגמה: איסוף עד יום ראשון בשעה 20:00 — השאירו ריק כדי לא להדפיס הערה"
+                                value={detailDay.printNote ?? ""}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  setSaleDays(prev => prev.map(d => d.id === detailDay.id ? { ...d, printNote: val } : d));
+                                }}
+                                rows={4}
+                                style={{ ...inputStyle, resize: "vertical" as const }}
+                              />
+                              <span style={{ fontSize: "12px", color: "#6b7280" }}>
+                                ההערה תודפס על גבי כל דפי ההזמנות של יום זה (הזמנה בודדת או הדפסת הכל).
+                              </span>
+                            </div>
+                            <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
+                              <button onClick={() => setShowPrintNoteModal(false)} className="cc-btn" style={{ ...btn("primary"), flex: 1 }}>סגור</button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ══ חלון בחירת קטגוריית סליקה ══ */}
+                      {showPaymentCategoryModal && detailDay && (
+                        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10020, display: "flex", alignItems: "center", justifyContent: "center" }}
+                          onClick={() => setShowPaymentCategoryModal(false)}>
+                          <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "480px", maxWidth: "95%", direction: "rtl", boxShadow: "0 16px 40px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" }}
+                            onClick={e => e.stopPropagation()}>
+                            <h3 style={{ margin: "0 0 20px", fontSize: "17px" }}>קטגוריית סליקה — {detailDay.name}</h3>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                              <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>קטגוריה (Groupe בנדרים פלוס)</label>
+                              <input
+                                type="text"
+                                placeholder="לדוגמה: מכירת ד' מינים — השאירו ריק כדי לא לשלוח קטגוריה"
+                                value={detailDay.paymentCategory ?? ""}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  setSaleDays(prev => prev.map(d => d.id === detailDay.id ? { ...d, paymentCategory: val } : d));
+                                }}
+                                style={inputStyle}
+                              />
+                              <span style={{ fontSize: "12px", color: "#6b7280" }}>
+                                כל תשלום באשראי שמתבצע במסגרת יום זה יסווג בדוחות נדרים פלוס תחת הקטגוריה שהוגדרה כאן.
+                              </span>
+                            </div>
+                            <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
+                              <button onClick={() => setShowPaymentCategoryModal(false)} className="cc-btn" style={{ ...btn("primary"), flex: 1 }}>סגור</button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {/* ══ מוצרים ══ */}
                       {saleDayDetailTab === "products" && (() => {
@@ -3782,7 +4145,15 @@ const importBackup = async (
                                         <label className="cc-menu-item" style={{ ...menuItemBtn("purple"), display: "flex", alignItems: "center", cursor: "pointer" }}>
                                           ייבוא מאקסל <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={e => { importPreOrdersFromExcel(e, detailDay.id); setShowOrdersActionsMenu(false); }} />
                                         </label>
-                                        <button onClick={() => { printAllOrdersList(allOrders.map(o => ({ order: o, dayName: detailDay.name }))); setShowOrdersActionsMenu(false); }}
+                                        <button disabled={nedarimSyncing} onClick={() => { setShowOrdersActionsMenu(false); importPreOrdersFromNedarimApi(detailDay.id); }}
+                                          className="cc-menu-item" style={{ ...menuItemBtn("primary"), opacity: nedarimSyncing ? 0.6 : 1 }}>
+                                          {nedarimSyncing ? "מושך…" : "משוך מנדרים פלוס"}
+                                        </button>
+                                        <button onClick={() => { setShowOrdersActionsMenu(false); setShowStationModal(true); }}
+                                          className="cc-menu-item" style={menuItemBtn()}>בחירת תחנת חלוקה</button>
+                                        <button onClick={() => { setShowOrdersActionsMenu(false); setShowPrintNoteModal(true); }}
+                                          className="cc-menu-item" style={menuItemBtn()}>הוסף הערה</button>
+                                        <button onClick={() => { printAllOrdersList(allOrders.map(o => ({ order: o, dayName: detailDay.name, printNote: detailDay.printNote }))); setShowOrdersActionsMenu(false); }}
                                           className="cc-menu-item" style={menuItemBtn("teal")}>הדפס הכל</button>
                                         <button onClick={() => { setShowOrdersActionsMenu(false); showConfirm({ title: "מחיקת כל ההזמנות", message: `למחוק את כל ההזמנות של "${detailDay.name}"?`, confirmLabel: "מחק הכל", confirmVariant: "danger", onConfirm: () => setSaleDays(prev => prev.map(d => d.id === detailDay.id ? { ...d, preOrders: [] } : d)) }); }}
                                           className="cc-menu-item danger" style={menuItemBtn("danger")}>מחק הכל
@@ -3838,7 +4209,7 @@ const importBackup = async (
                                               <td style={{ ...tdS, textAlign: "center" as const }} onClick={e => e.stopPropagation()}>
                                                 <div style={{ display: "flex", gap: "4px", justifyContent: "center" }}>
                                                   {order.status === "pending" && <button onClick={() => openPreOrderForm(detailDay.id, order)} className="cc-btn" style={btn("primary", "sm")}>ערוך</button>}
-                                                  <button onClick={() => printSingleOrder(order, detailDay.name)} className="cc-btn" style={btn("teal", "sm")}>הדפס</button>
+                                                  <button onClick={() => printSingleOrder(order, detailDay.name, detailDay.printNote)} className="cc-btn" style={btn("teal", "sm")}>הדפס</button>
                                                   <button onClick={() => deletePreOrder(detailDay.id, order.id)} className="cc-btn" style={btn("danger", "sm")}>מחק</button>
                                                 </div>
                                               </td>
@@ -3882,7 +4253,7 @@ const importBackup = async (
                                         </div>
                                         <div style={{ display: "flex", gap: "4px" }}>
                                           {order.status === "pending" && <button onClick={() => openPreOrderForm(detailDay.id, order)} className="cc-btn" style={btn("primary", "sm")}>ערוך</button>}
-                                          <button onClick={() => printSingleOrder(order, detailDay.name)} className="cc-btn" style={btn("teal", "sm")}>הדפס</button>
+                                          <button onClick={() => printSingleOrder(order, detailDay.name, detailDay.printNote)} className="cc-btn" style={btn("teal", "sm")}>הדפס</button>
                                           <button onClick={() => deletePreOrder(detailDay.id, order.id)} className="cc-btn" style={btn("danger", "sm")}>מחק</button>
                                           <button onClick={() => setExpandedOrderId(isExp ? null : order.id)} className="cc-btn" style={btn("ghost", "sm")}>{isExp ? "▲" : "▼"}</button>
                                         </div>
@@ -4726,7 +5097,7 @@ const importBackup = async (
           const settingsTabDescriptions: Record<string, string> = {
             sellers: "ניהול רשימת המוכרים ותפקידיהם.",
             backup: "הורדת גיבוי של כל הנתונים ושחזור מקובץ גיבוי קיים.",
-            integrity: "בדיקת עסקאות ממתינות ללא שיוך ליום מכירה.",
+            integrity: "בדיקת תקינות כללית: סליקה, מלאי, נתונים ועוד.",
             log: "מעקב אחר פעולות שבוצעו במערכת.",
             alerts: "הגדרת שליחת מייל אוטומטי על מלאי נמוך דרך EmailJS.",
             payment: "הגדרות חיבור לשירות סליקת האשראי נדרים פלוס.",
@@ -4741,6 +5112,123 @@ const importBackup = async (
           });
           const thLog: React.CSSProperties = { padding: "8px 12px", textAlign: "center" as const, background: "#f1f5f9", borderBottom: "2px solid #e2e8f0", position: "sticky" as const, top: 0, zIndex: 1, fontWeight: 700, fontSize: "13px", color: "#374151", whiteSpace: "nowrap" as const };
           const usage = getStorageUsage();
+
+          type SystemCheck = {
+            id: string;
+            severity: "critical" | "warning" | "info";
+            title: string;
+            message: string;
+            fixLabel?: string;
+            onFix?: () => void;
+          };
+          const systemChecks: SystemCheck[] = [];
+
+          if (!nedarimConfig.mosad || !nedarimConfig.apiValid) {
+            systemChecks.push({
+              id: "credit-config",
+              severity: "warning",
+              title: "סליקת אשראי לא מוגדרת",
+              message: "מספר מוסד ו/או קוד API (ApiValid) לא מולאו — לא ניתן יהיה לגבות בכרטיס אשראי.",
+              fixLabel: "עבור להגדרות סליקה",
+              onFix: () => { setSettingsTab("payment"); },
+            });
+          }
+          if (!nedarimConfig.formMosadId || !nedarimConfig.formApiKey) {
+            systemChecks.push({
+              id: "form-api-config",
+              severity: "info",
+              title: "מפתח משיכת הזמנות מנדרים פלוס לא מוגדר",
+              message: "מספר מוסד של הטופס ו/או מפתח API (ApiPassword) לא מולאו — לא ניתן יהיה למשוך הזמנות ישירות מנדרים פלוס.",
+              fixLabel: "עבור להגדרות סליקה",
+              onFix: () => { setSettingsTab("payment"); },
+            });
+          }
+          if (nedarimConfig.formMosadId && nedarimConfig.formApiKey && activeSaleDay?.type === "preorder" && !activeSaleDay.nedarimStation) {
+            systemChecks.push({
+              id: "active-day-station",
+              severity: "warning",
+              title: `לא נבחרה תחנת חלוקה ליום הפעיל "${activeSaleDay.name}"`,
+              message: "משיכת הזמנות מנדרים פלוס תייבא הזמנות מכל התחנות, כולל כאלו שלא שייכות ליום זה — ייתכן שהייבוא לא יתאים בפועל.",
+              fixLabel: "עבור לבחירת תחנה",
+              onFix: () => { setAdminTab("sales"); setSaleDayDetailId(activeSaleDay.id); setSaleDayDetailTab("info"); setShowStationModal(true); },
+            });
+          }
+          if (nedarimConfig.mosad && nedarimConfig.apiValid && activeSaleDay && !activeSaleDay.paymentCategory) {
+            systemChecks.push({
+              id: "active-day-category",
+              severity: "info",
+              title: `אין קטגוריית סליקה ליום הפעיל "${activeSaleDay.name}"`,
+              message: "תשלומי אשראי ביום זה יירשמו בדוחות נדרים פלוס ללא סיווג קטגוריה.",
+              fixLabel: "עבור ליום ולהגדיר",
+              onFix: () => { setAdminTab("sales"); setSaleDayDetailId(activeSaleDay.id); setSaleDayDetailTab("info"); },
+            });
+          }
+          if (activeSaleDay) {
+            const shortages = getInventoryForDay(activeSaleDay)
+              .map(inv => computeInventoryRow(inv, activeSaleDay.transactions ?? []))
+              .filter(r => r.shortageQty > 0);
+            if (shortages.length > 0) {
+              systemChecks.push({
+                id: "active-day-shortage",
+                severity: "warning",
+                title: `מלאי חסר ביום הפעיל "${activeSaleDay.name}"`,
+                message: `${shortages.length} מוצרים עם מלאי בפועל נמוך מהנדרש: ${shortages.map(s => s.productName).join(", ")}`,
+                fixLabel: "עבור לניהול מלאי",
+                onFix: () => { setAdminTab("inventory"); setInventoryAdminTab("inventory"); setInventorySelectedDayId(activeSaleDay.id); setInventoryStep("planning"); },
+              });
+            }
+          }
+          if (activeSaleDay && (activeSaleDay.products ?? []).length === 0) {
+            systemChecks.push({
+              id: "active-day-no-products",
+              severity: "critical",
+              title: `אין מוצרים ביום הפעיל "${activeSaleDay.name}"`,
+              message: "לא ניתן למכור דבר עד שיתווספו מוצרים ליום זה.",
+              fixLabel: "עבור למוצרים",
+              onFix: () => { setAdminTab("sales"); setSaleDayDetailId(activeSaleDay.id); setSaleDayDetailTab("products"); },
+            });
+          }
+          {
+            const emailConfigured =
+              !!(emailJSConfig.gmailClientId && emailJSConfig.recipientEmail) ||
+              !!(emailJSConfig.publicKey && emailJSConfig.serviceId && emailJSConfig.templateId && emailJSConfig.recipientEmail);
+            if (!emailConfigured) {
+              systemChecks.push({
+                id: "email-alerts",
+                severity: "info",
+                title: "התראות מייל לא מוגדרות",
+                message: "לא יישלחו התראות מלאי נמוך או סיכומי סגירת יום במייל.",
+                fixLabel: "עבור להגדרות התראות",
+                onFix: () => { setSettingsTab("alerts"); },
+              });
+            } else if (!emailJSConfig.saleLowStockThreshold) {
+              systemChecks.push({
+                id: "low-stock-threshold",
+                severity: "warning",
+                title: "לא הוזן סף מלאי נמוך לשליחת מייל",
+                message: "התראת מלאי נמוך תוך כדי מכירה לא תישלח כל עוד לא הוזן סף כמות.",
+                fixLabel: "עבור להגדרות התראות",
+                onFix: () => { setSettingsTab("alerts"); },
+              });
+            }
+          }
+          if (usage.percent >= 75) {
+            systemChecks.push({
+              id: "storage-usage",
+              severity: usage.percent >= 85 ? "critical" : "warning",
+              title: "אחסון מקומי כמעט מלא",
+              message: `${usage.percent}% מהאחסון המקומי בשימוש (${usage.mb} MB מתוך כ-5 MB) — מומלץ לגבות ולנקות יומן פעילות.`,
+              fixLabel: "עבור לגיבוי",
+              onFix: () => { setSettingsTab("backup"); },
+            });
+          }
+
+          const severityStyle: Record<SystemCheck["severity"], { bg: string; border: string; color: string; icon: string }> = {
+            critical: { bg: "#fef2f2", border: "#fca5a5", color: "#991b1b", icon: "🔴" },
+            warning: { bg: "#fefce8", border: "#fde68a", color: "#92400e", icon: "🟡" },
+            info: { bg: "#f0f9ff", border: "#bae6fd", color: "#0369a1", icon: "🔵" },
+          };
+
           return (
           <div style={{ background: "white", borderRadius: "20px", overflow: "hidden" }}>
             {/* כותרת + תיאור */}
@@ -4753,7 +5241,7 @@ const importBackup = async (
                 {([["sellers","מוכרים"],["backup","גיבוי ושחזור"],["integrity","תקינות נתונים"],["log","יומן פעילות"],["alerts","התראות מייל"],["payment","סליקת אשראי"],["security","אבטחה"]] as const).map(([key, label]) => (
                   <button key={key} onClick={() => setSettingsTab(key)} className="cc-underline-tab"
                     style={underlineTabBtn(settingsTab === key)}>
-                    {label}{key === "integrity" && orphans.length > 0 ? ` (${orphans.length})` : ""}
+                    {label}{key === "integrity" && (orphans.length + systemChecks.length) > 0 ? ` (${orphans.length + systemChecks.length})` : ""}
                   </button>
                 ))}
               </div>
@@ -4922,11 +5410,32 @@ const importBackup = async (
               {/* ── תקינות נתונים ── */}
               {settingsTab === "integrity" && (
                 <div style={{ direction: "rtl" }}>
-                  {orphans.length === 0 ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "#f8fafc", borderRadius: "12px", padding: "14px 18px", border: "1px solid #e2e8f0", color: "#374151", fontSize: "14px" }}>
-                      <span style={{ color: "#16a34a", fontSize: "18px" }}>✓</span>
-                      לא נמצאו עסקאות ממתינות ללא שיוך ליום מכירה.
+                  {systemChecks.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
+                      {systemChecks.map(c => {
+                        const s = severityStyle[c.severity];
+                        return (
+                          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", background: s.bg, border: `1px solid ${s.border}`, borderRadius: "10px", padding: "12px 16px", flexWrap: "wrap" }}>
+                            <span style={{ fontSize: "16px" }}>{s.icon}</span>
+                            <div style={{ flex: 1, minWidth: "200px" }}>
+                              <div style={{ fontWeight: 700, fontSize: "14px", color: s.color }}>{c.title}</div>
+                              <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>{c.message}</div>
+                            </div>
+                            {c.onFix && (
+                              <button onClick={c.onFix} className="cc-btn" style={btn("secondary", "sm")}>{c.fixLabel ?? "תקן"}</button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
+                  )}
+                  {orphans.length === 0 ? (
+                    systemChecks.length === 0 && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "#f8fafc", borderRadius: "12px", padding: "14px 18px", border: "1px solid #e2e8f0", color: "#374151", fontSize: "14px" }}>
+                        <span style={{ color: "#16a34a", fontSize: "18px" }}>✓</span>
+                        לא נמצאו בעיות תקינות במערכת.
+                      </div>
+                    )
                   ) : (
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "#fef3c7", borderRadius: "10px", padding: "12px 16px", marginBottom: "16px", color: "#92400e", fontSize: "14px", fontWeight: 600 }}>
@@ -5160,6 +5669,66 @@ const importBackup = async (
                 ⚠️ יש למלאות את שני השדות כדי שסליקת האשראי תפעל.
               </div>
             )}
+
+            <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "12px", padding: "14px 18px", fontSize: "13px", color: "#1e40af", lineHeight: 1.7 }}>
+              💡 רוצים שתשלומי אשראי יסווגו בדוחות נדרים פלוס תחת קטגוריה מסוימת (Groupe)? הבחירה אינה כאן — יש להגדיר אותה בנפרד לכל יום מכירה, דרך הכפתור <strong>"💳 קטגוריית סליקה"</strong> בטאב <strong>סקירה</strong> של אותו יום מכירה.
+            </div>
+
+            <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "12px", padding: "14px 18px", fontSize: "13px", color: "#1e40af", lineHeight: 1.7 }}>
+                הגדרות אלו מאפשרות למשוך הזמנות ישירות מטופס באתר <strong>נדרים פלוס</strong> (API - רשומות טופס), במקום ייבוא קובץ אקסל.<br />
+                יוצרים מפתח API במסך <strong>עוד ← מפתחות API</strong>, במפתח מוגבל מסמנים את ההרשאה <strong>"משיכת רשומות טופס"</strong> (קטגוריה טפסים).
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>מספר מוסד (של הטופס)</label>
+                <input
+                  type="text"
+                  placeholder="לדוגמה: 7003477"
+                  value={nedarimConfig.formMosadId}
+                  onChange={e => setNedarimConfig(prev => ({ ...prev, formMosadId: e.target.value }))}
+                  style={{ ...inputStyle, maxWidth: "320px" }}
+                />
+                <span style={{ fontSize: "12px", color: "#6b7280" }}>
+                  מספר המוסד שבו נמצא הטופס — ייתכן שונה מהמוסד שמעליו (שמשמש לסליקת אשראי).
+                </span>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>מפתח API למשיכת רשומות (ApiPassword)</label>
+                <input
+                  type="text"
+                  placeholder="npk_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                  value={nedarimConfig.formApiKey}
+                  onChange={e => setNedarimConfig(prev => ({ ...prev, formApiKey: e.target.value }))}
+                  style={{ ...inputStyle, maxWidth: "420px" }}
+                />
+                <span style={{ fontSize: "12px", color: "#6b7280" }}>
+                  מפתח זה שונה מקוד ה-ApiValid שלמעלה — הוא נועד למשיכת נתונים ולא לתשלום. שימו לב: המפתח נשמר בדפדפן, כמו שאר הגדרות נדרים פלוס.
+                </span>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontWeight: 700, fontSize: "14px", color: "#374151" }}>מספר טופס (TofesId)</label>
+                <input
+                  type="text"
+                  placeholder="392"
+                  value={nedarimConfig.formTofesId}
+                  onChange={e => setNedarimConfig(prev => ({ ...prev, formTofesId: e.target.value }))}
+                  style={{ ...inputStyle, maxWidth: "160px" }}
+                />
+              </div>
+
+              <div style={{ fontSize: "12px", color: "#6b7280" }}>
+                תחנת החלוקה ומעקב הסנכרון מוגדרים לכל יום מכירה בנפרד, במסך "פרטי יום" של אותו יום.
+              </div>
+
+              {(!nedarimConfig.formMosadId || !nedarimConfig.formApiKey) && (
+                <div style={{ background: "#fef9c3", border: "1px solid #fde047", borderRadius: "10px", padding: "10px 14px", fontSize: "13px", color: "#854d0e" }}>
+                  ⚠️ יש למלאות מספר מוסד ומפתח API כדי שמשיכת ההזמנות תפעל.
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -7304,7 +7873,7 @@ const importBackup = async (
       )}
       {/* ══ AlertDialog (blocking error/info) ══ */}
       {alertDialog && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10200, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: "white", borderRadius: "20px", padding: "28px 32px", maxWidth: "420px", width: "90%", direction: "rtl", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
             <h3 style={{ margin: "0 0 12px", fontSize: "18px", color: "#dc2626" }}>{alertDialog.title}</h3>
             <p style={{ margin: "0 0 24px", color: "#374151", fontSize: "14px", lineHeight: 1.6 }}>{alertDialog.message}</p>
@@ -7374,7 +7943,7 @@ const importBackup = async (
 
       {/* ══ ConfirmDialog ══ */}
       {confirmDialog && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 10200, display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={() => setConfirmDialog(null)}>
           <div style={{ background: "white", borderRadius: "20px", padding: "28px 32px", maxWidth: "420px", width: "90%", direction: "rtl", boxShadow: "0 20px 60px rgba(0,0,0,0.25)", textAlign: "center" }}
             onClick={e => e.stopPropagation()}>
