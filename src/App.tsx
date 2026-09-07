@@ -133,6 +133,7 @@ type Product = {
   priceLevels?: number[];
   giftTrigger?: boolean;
   isGiftBag?: boolean;
+  nedarimProductId?: number;
 };
 
 type CartItem = {
@@ -585,6 +586,8 @@ export default function App() {
 
   const [editingProductId, setEditingProductId] =
     useState<number | null>(null);
+  const [draggedProductId, setDraggedProductId] = useState<number | null>(null);
+  const [dragOverProductId, setDragOverProductId] = useState<number | null>(null);
 
   const [editingName, setEditingName] =
     useState("");
@@ -1627,11 +1630,6 @@ export default function App() {
     lineHeight: size === "sm" ? 1 : undefined,
     transition: "all 0.12s",
   });
-  const reorderBtn = (): React.CSSProperties => ({
-    padding: "2px 8px", fontSize: "12px",
-    border: "1px solid #cbd5e1", borderRadius: "4px",
-    background: "white", cursor: "pointer", lineHeight: 1, transition: "opacity 0.15s",
-  });
   const underlineTabBtn = (active: boolean): React.CSSProperties => ({
     padding: "12px 20px", background: "none", border: "none",
     borderBottom: active ? "3px solid #2563eb" : "3px solid transparent",
@@ -1901,15 +1899,26 @@ export default function App() {
   };
 
   const loadPreOrderToCart = (order: PreOrder, saleDayId: number, orderId: number) => {
-    setCart(order.items.map(item => {
-      const product = activeProducts.find(p =>
-        p.id === item.id ||
+    // התאמה לפי מזהה מדויק קודם — רק אם אין כזה נופלים להתאמת שם מטושטשת,
+    // שעלולה לפגוע במוצר לא נכון כשיש כמה מוצרים עם שמות דומים/חופפים
+    const resolvedItems = order.items.map(item => {
+      const product = activeProducts.find(p => p.id === item.id) ?? activeProducts.find(p =>
         p.name === item.name ||
         item.name.includes(p.name) ||
         p.name.includes(item.name)
       );
-      return { ...item, price: product?.price ?? item.price };
-    }));
+      // מאמצים גם את המזהה והשם האמיתיים של המוצר (לא רק המחיר) — אחרת הוספה ידנית לאותו
+      // מוצר מרשימת המוצרים בקופה לא תזהה שזו אותה שורה, ותיצור שורה כפולה בסל
+      return product ? { ...item, id: product.id, name: product.name, price: product.price } : item;
+    });
+    // מאחדים פריטים שהתבררו כאותו מוצר בפועל (למשל שני שמות היסטוריים שונים לאותו מוצר)
+    const mergedItems: CartItem[] = [];
+    for (const item of resolvedItems) {
+      const existing = mergedItems.find(i => i.id === item.id && i.price === item.price);
+      if (existing) existing.qty += item.qty;
+      else mergedItems.push({ ...item });
+    }
+    setCart(mergedItems);
     const customer = activeCustomers.find(c => c.name === order.customerName)
       ?? (order.customerName ? { id: 0, name: order.customerName, phone: order.customerPhone ?? "", idNumber: "", customerType: "1" as CustomerType } : null);
     setSelectedCustomer(customer);
@@ -1941,10 +1950,11 @@ export default function App() {
     ]);
 
     // collect all product column names from headers
+    // עמודות שיש בכותרת שלהן "#" מתעלמים מהן (לא מוצר — כותרת מבולגנת/הערת עריכה)
     const productColNames: string[] = [];
     for (const row of jsonData) {
       for (const colName of Object.keys(row)) {
-        if (!FIXED_COLS.has(colName) && !productColNames.includes(colName)) {
+        if (!FIXED_COLS.has(colName) && !colName.includes("#") && !productColNames.includes(colName)) {
           productColNames.push(colName);
         }
       }
@@ -1969,7 +1979,7 @@ export default function App() {
       let itemIdSuffix = 0;
 
       for (const [colName, colValue] of Object.entries(row)) {
-        if (FIXED_COLS.has(colName)) continue;
+        if (FIXED_COLS.has(colName) || colName.includes("#")) continue;
         const qty = parseInt(String(colValue), 10);
         if (!qty || qty <= 0) continue;
 
@@ -2137,18 +2147,43 @@ export default function App() {
         }
       };
 
-      // מוצרים חדשים שמופיעים בהזמנות אך לא קיימים ביום המכירה — שם, מחיר וקטגוריה נלקחים מההזמנה עצמה
-      const productCandidates = new Map<string, { price: number; category: string }>();
+      // התאמת פריט למוצר קיים: קודם לפי ProductId היציב של נדרים פלוס (עמיד לשינוי שם מוצר בנדרים),
+      // ורק אם אין התאמה — לפי שם (fallback למוצרים שטרם קושרו למזהה)
+      const findProductMatch = (products: Product[], it: NedarimOrderItem, name: string): Product | undefined => {
+        if (it.ProductId != null) {
+          const byId = products.find(p => p.nedarimProductId === it.ProductId);
+          if (byId) return byId;
+        }
+        return products.find(p => p.name === name || name.includes(p.name) || p.name.includes(name));
+      };
+
+      // מוצרים חדשים שמופיעים בהזמנות אך לא קיימים ביום המכירה — שם, מחיר וקטגוריה נלקחים מההזמנה עצמה.
+      // ממופה לפי ProductId כשקיים (כדי לאחד רשומות ישנות/חדשות עם שם שונה לאותו מוצר), אחרת לפי שם.
+      const productCandidates = new Map<string, { name: string; price: number; category: string; nedarimProductId?: number }>();
       for (const rec of stationRecords) {
         for (const it of parseItems(rec)) {
           const name = String(it.Name ?? "").trim();
-          if (!name || productCandidates.has(name)) continue;
-          productCandidates.set(name, { price: Number(it.Price) || 0, category: String(it.Category ?? "כללי") });
+          if (!name) continue;
+          const key = it.ProductId != null ? `id:${it.ProductId}` : `name:${name}`;
+          productCandidates.set(key, { name, price: Number(it.Price) || 0, category: String(it.Category ?? "כללי"), nedarimProductId: it.ProductId });
         }
       }
 
       const importedOrders: PreOrder[] = [];
       let idCounter = Date.now();
+
+      // מזהה זמני משותף לכל פריט שטרם קיים כמוצר באפליקציה, לפי אותו מפתח מוצר (ProductId/שם) —
+      // כך שכל ההזמנות באותו סנכרון שמפנות לאותו מוצר חדש מקבלות מזהה אחיד, ולא מזהה שונה לכל הזמנה
+      const unmatchedPlaceholderIds = new Map<string, number>();
+      let placeholderCounter = -Date.now();
+      const getPlaceholderId = (key: string) => {
+        let id = unmatchedPlaceholderIds.get(key);
+        if (id == null) {
+          id = placeholderCounter--;
+          unmatchedPlaceholderIds.set(key, id);
+        }
+        return id;
+      };
 
       for (const rec of stationRecords) {
         const recId = Number(rec.ID);
@@ -2166,22 +2201,24 @@ export default function App() {
         ].filter(Boolean).join("\n");
 
         const items: CartItem[] = [];
-        let itemIdSuffix = 0;
         for (const it of parseItems(rec)) {
           const name = String(it.Name ?? "").trim();
           const qty = Number(it.Qty) || 0;
           if (!name || qty <= 0) continue;
-          const matched = dayProducts.find(
-            (p) => p.name === name || name.includes(p.name) || p.name.includes(name)
-          );
+          const matched = findProductMatch(dayProducts, it, name);
+          const key = it.ProductId != null ? `id:${it.ProductId}` : `name:${name}`;
+          // גם כשאין עדיין מוצר תואם באפליקציה (למשל אחרי מחיקת כל המוצרים), משתמשים בשם שנפתר
+          // מכלל ההזמנות שנסרקו (productCandidates) — הוא תמיד השם העדכני ביותר, לא השם ההיסטורי בהזמנה הבודדת
+          const resolvedName = matched?.name ?? productCandidates.get(key)?.name ?? name;
           items.push({
-            id: matched ? matched.id : -(idCounter + itemIdSuffix++),
-            name,
+            id: matched ? matched.id : getPlaceholderId(key),
+            name: resolvedName,
             price: matched?.price ?? (Number(it.Price) || 0),
             qty,
           });
         }
-        if (items.length === 0) continue;
+        // מייבאים גם הזמנות ללא פריטים (לקוח נרשם אך לא נבחרו מוצרים) — כדי שלא "ייעלמו" בשקט;
+        // אפשר להוסיף להן פריטים ידנית לאחר מכן דרך עריכת ההזמנה
 
         importedOrders.push({
           id: idCounter++,
@@ -2219,28 +2256,51 @@ export default function App() {
             }
           }
 
-          const existingProducts = day.products ?? [];
+          const existingProducts = (day.products ?? []).map(p => ({ ...p }));
           const newProducts: Product[] = [];
           let pIdCounter = Date.now() + 10000;
-          for (const [name, info] of productCandidates) {
-            const alreadyExists = existingProducts.some(p =>
-              p.name === name || name.includes(p.name) || p.name.includes(name)
+          // ממפה מזהה זמני (שהוצמד לפריטים כי המוצר עוד לא היה קיים) → המזהה האמיתי של המוצר שנוצר כעת,
+          // כדי שההזמנות עצמן יצביעו על המוצר הנכון ולא יישארו "תקועות" עם מזהה זמני
+          const placeholderToRealId = new Map<number, number>();
+          for (const [key, candidate] of productCandidates) {
+            // התאמה לפי ProductId קודם — רק אם אין כזה נופלים להתאמת שם מטושטשת,
+            // כדי לא "לתפוס" בטעות מוצר אחר עם שם דומה/חופף לפני שמגיעים למוצר הנכון
+            const idMatchIdx = candidate.nedarimProductId != null
+              ? existingProducts.findIndex(p => p.nedarimProductId === candidate.nedarimProductId)
+              : -1;
+            const matchIdx = idMatchIdx !== -1 ? idMatchIdx : existingProducts.findIndex(p =>
+              p.name === candidate.name || candidate.name.includes(p.name) || p.name.includes(candidate.name)
             );
-            if (!alreadyExists) {
-              newProducts.push({
+            if (matchIdx === -1) {
+              const newProduct: Product = {
                 id: pIdCounter++,
-                name,
-                price: info.price,
-                category: info.category,
+                name: candidate.name,
+                price: candidate.price,
+                category: candidate.category,
                 stock: 0,
-              });
+                ...(candidate.nedarimProductId != null ? { nedarimProductId: candidate.nedarimProductId } : {}),
+              };
+              newProducts.push(newProduct);
+              const placeholderId = unmatchedPlaceholderIds.get(key);
+              if (placeholderId != null) placeholderToRealId.set(placeholderId, newProduct.id);
+            } else if (candidate.nedarimProductId != null && existingProducts[matchIdx].nedarimProductId == null) {
+              // מוצר קיים שעדיין לא קושר למזהה היציב של נדרים פלוס — מקשרים אותו כעת, כדי ששינויי שם עתידיים ימשיכו להתאים
+              existingProducts[matchIdx] = { ...existingProducts[matchIdx], nedarimProductId: candidate.nedarimProductId };
             }
           }
 
           const existingNedarimIds = new Set(
             (day.preOrders ?? []).map(o => o.nedarimId).filter((v): v is number => v != null)
           );
-          const uniqueOrders = importedOrders.filter(o => o.nedarimId == null || !existingNedarimIds.has(o.nedarimId));
+          const uniqueOrders = importedOrders
+            .filter(o => o.nedarimId == null || !existingNedarimIds.has(o.nedarimId))
+            .map(o => placeholderToRealId.size === 0 ? o : {
+              ...o,
+              items: o.items.map(it => {
+                const realId = placeholderToRealId.get(it.id);
+                return realId != null ? { ...it, id: realId } : it;
+              }),
+            });
           const skipped = importedOrders.length - uniqueOrders.length;
           if (skipped > 0) addToast(`${skipped} הזמנות כבר יובאו בעבר ולא יובאו שנית. יובאו ${uniqueOrders.length} הזמנות חדשות.`, "warning");
 
@@ -2274,13 +2334,18 @@ export default function App() {
 
   // ── ניהול מלאי ──
   const getInventoryForDay = (day: SaleDay): InventoryItem[] => {
-    if (day.inventory && day.inventory.length > 0) return day.inventory;
-    return (day.products ?? []).map(p => ({
-      productId: p.id,
-      productName: p.name,
-      requiredQty: 0,
-      actualInQty: 0,
-    }));
+    // בונים תמיד לפי רשימת המוצרים העדכנית של היום — כך שמוצרים שנמחקו לא ממשיכים
+    // להופיע במלאי, ומוצרים חדשים מקבלים שורת מלאי אוטומטית; נתונים קיימים (כמות נדרשת/בפועל וכו') נשמרים
+    const existing = day.inventory ?? [];
+    return (day.products ?? []).map(p => {
+      const found = existing.find(i => i.productId === p.id);
+      return found ? { ...found, productName: p.name } : {
+        productId: p.id,
+        productName: p.name,
+        requiredQty: 0,
+        actualInQty: 0,
+      };
+    });
   };
 
   const computeInventoryRow = (inv: InventoryItem, txs: Transaction[], preOrders?: PreOrder[]) => {
@@ -2411,10 +2476,20 @@ export default function App() {
 
   const syncPreorderRequiredQty = (day: SaleDay) => {
     const base = getInventoryForDay(day);
+    const knownIds = new Set(base.map(i => i.productId));
+    const allItems = (day.preOrders ?? []).flatMap(o => o.items);
+    // ספירת שמות מוצרים ביום — כדי לאפשר נפילה בטוחה לפי שם רק כשהשם ייחודי,
+    // עבור פריטים ישנים שנשארו עם מזהה זמני/לא מקושר (מייבוא לפני שהמוצר נוצר)
+    const nameCounts = new Map<string, number>();
+    for (const i of base) nameCounts.set(i.productName, (nameCounts.get(i.productName) ?? 0) + 1);
+
     const updated = base.map(item => {
-      const ordered = (day.preOrders ?? [])
-        .flatMap(o => o.items)
-        .filter(i => i.id === item.productId)
+      const ordered = allItems
+        .filter(i => {
+          if (i.id === item.productId) return true;
+          if (knownIds.has(i.id)) return false; // מזהה תקין ששייך למוצר אחר — לא נופלים לשם
+          return i.name === item.productName && nameCounts.get(item.productName) === 1;
+        })
         .reduce((s, i) => s + i.qty, 0);
       return { ...item, requiredQty: ordered };
     });
@@ -3957,6 +4032,13 @@ const importBackup = async (
                               <button onClick={() => setShowNewProductForm(v => !v)} className="cc-btn" style={btn("success", "sm")}>
                                 {showNewProductForm ? "✕ סגור" : "+ מוצר חדש"}
                               </button>
+                              <button onClick={() => showConfirm({
+                                title: "מחיקת כל המוצרים",
+                                message: `למחוק את כל ${detailProducts.length} המוצרים של "${detailDay.name}"? פעולה זו אינה הפיכה.`,
+                                confirmLabel: "מחק הכל",
+                                confirmVariant: "danger",
+                                onConfirm: () => setDetailProducts([]),
+                              })} className="cc-btn" style={btn("danger", "sm")}>מחק הכל</button>
                               <input placeholder="חיפוש..." value={productsSearch} onChange={e => setProductsSearch(e.target.value)}
                                 style={{ ...inputStyle, flex: "1 1 140px", padding: "6px 10px", fontSize: "13px" }} />
                               {cats.length > 0 && (
@@ -4000,6 +4082,7 @@ const importBackup = async (
                               <table style={{ width: "100%", borderCollapse: "collapse", direction: "rtl" }}>
                                 <thead>
                                   <tr>
+                                    <th style={{ ...thS, width: "24px" }}></th>
                                     <th style={{ ...thS, width: "36px", textAlign: "center" as const }}>#</th>
                                     <th style={thS}>שם מוצר</th>
                                     <th style={thS}>קטגוריה</th>
@@ -4010,12 +4093,12 @@ const importBackup = async (
                                 </thead>
                                 <tbody>
                                   {filtered.length === 0 && (
-                                    <tr><td colSpan={6} style={{ ...tdS, textAlign: "center" as const, color: "#9ca3af", padding: "32px" }}>אין מוצרים להצגה</td></tr>
+                                    <tr><td colSpan={7} style={{ ...tdS, textAlign: "center" as const, color: "#9ca3af", padding: "32px" }}>אין מוצרים להצגה</td></tr>
                                   )}
                                   {filtered.map((product, fi) => {
                                     return editingProductId === product.id ? (
                                       <tr key={product.id} style={{ background: "#f0f9ff" }}>
-                                        <td colSpan={6} style={{ ...tdS, padding: "10px 12px" }}>
+                                        <td colSpan={7} style={{ ...tdS, padding: "10px 12px" }}>
                                           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
                                             <input placeholder="שם" value={editingName} onChange={e => setEditingName(e.target.value)} style={{ ...inputStyle, flex: "2 1 120px", padding: "6px 8px", fontSize: "13px" }} />
                                             <input placeholder="קטגוריה" value={editingCategory} onChange={e => setEditingCategory(e.target.value)} style={{ ...inputStyle, flex: "1 1 80px", padding: "6px 8px", fontSize: "13px" }} />
@@ -4038,7 +4121,36 @@ const importBackup = async (
                                         </td>
                                       </tr>
                                     ) : (
-                                      <tr key={product.id}>
+                                      <tr key={product.id}
+                                        draggable
+                                        onDragStart={() => setDraggedProductId(product.id)}
+                                        onDragOver={e => { e.preventDefault(); if (dragOverProductId !== product.id) setDragOverProductId(product.id); }}
+                                        onDragLeave={() => setDragOverProductId(prev => prev === product.id ? null : prev)}
+                                        onDrop={e => {
+                                          e.preventDefault();
+                                          if (draggedProductId != null && draggedProductId !== product.id) {
+                                            setDetailProducts(prev => {
+                                              const from = prev.findIndex(p => p.id === draggedProductId);
+                                              const to = prev.findIndex(p => p.id === product.id);
+                                              if (from === -1 || to === -1) return prev;
+                                              const next = [...prev];
+                                              const [moved] = next.splice(from, 1);
+                                              next.splice(to, 0, moved);
+                                              return next;
+                                            });
+                                          }
+                                          setDraggedProductId(null);
+                                          setDragOverProductId(null);
+                                        }}
+                                        onDragEnd={() => { setDraggedProductId(null); setDragOverProductId(null); }}
+                                        style={{
+                                          opacity: draggedProductId === product.id ? 0.4 : 1,
+                                          background: dragOverProductId === product.id && draggedProductId !== product.id ? "#eff6ff" : undefined,
+                                        }}
+                                      >
+                                        <td style={{ ...tdS, textAlign: "center" as const, padding: "4px" }}>
+                                          <span title="גררו לשינוי סדר" style={{ cursor: "grab", fontSize: "16px", color: "#9ca3af", userSelect: "none" as const }}>⠿</span>
+                                        </td>
                                         <td style={{ ...tdS, textAlign: "center" as const, color: "#6b7280", fontWeight: 600 }}>{fi + 1}</td>
                                         <td style={{ ...tdS, fontWeight: 700 }}>
                                           {product.name}
@@ -4056,18 +4168,6 @@ const importBackup = async (
                                         </td>
                                         <td style={{ ...tdS, textAlign: "center" as const }}>
                                           <div style={{ display: "flex", gap: "3px", justifyContent: "center", alignItems: "center" }}>
-                                            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                                              <button onClick={() => setDetailProducts(prev => {
-                                                const idx = prev.findIndex(p => p.id === product.id);
-                                                if (idx <= 0) return prev;
-                                                const next = [...prev]; [next[idx], next[idx-1]] = [next[idx-1], next[idx]]; return next;
-                                              })} className="cc-btn" style={reorderBtn()} disabled={detailProducts.findIndex(p => p.id === product.id) <= 0}>▲</button>
-                                              <button onClick={() => setDetailProducts(prev => {
-                                                const idx = prev.findIndex(p => p.id === product.id);
-                                                if (idx < 0 || idx >= prev.length - 1) return prev;
-                                                const next = [...prev]; [next[idx], next[idx+1]] = [next[idx+1], next[idx]]; return next;
-                                              })} className="cc-btn" style={reorderBtn()} disabled={detailProducts.findIndex(p => p.id === product.id) >= detailProducts.length - 1}>▼</button>
-                                            </div>
                                             <button onClick={() => startEditProduct(product)} className="cc-btn" style={btn("primary", "sm")}>ערוך</button>
                                             <button onClick={() => showConfirm({
                                               title: "מחיקת מוצר", message: "למחוק מוצר זה מהמכירה?", itemName: product.name,
