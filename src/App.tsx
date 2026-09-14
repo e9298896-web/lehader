@@ -158,7 +158,7 @@ type Customer = {
 
 
 type PaymentPart = {
-  method: "cash" | "check" | "credit";
+  method: "cash" | "check" | "credit" | "terminal";
   amount: number;
   cashReceived?: number;
   cashChange?: number;
@@ -222,6 +222,7 @@ type PreOrder = {
   items: CartItem[];
   status: "pending" | "paid";
   nedarimId?: number;
+  shortageNotes?: string[];
 };
 
 type SaleDayType = "preorder" | "walkin" | "walkin-nodiscount" | "open";
@@ -352,7 +353,7 @@ export default function App() {
     useState("מאפים");
 
   const [paymentMethod, setPaymentMethod] =
-    useState<"cash" | "check" | "credit">
+    useState<"cash" | "check" | "credit" | "terminal">
     ("cash");
 
   const [cashReceived, setCashReceived] =
@@ -362,6 +363,9 @@ export default function App() {
     useState(1);
 
   const [creditInstallments, setCreditInstallments] =
+    useState(1);
+
+  const [terminalInstallments, setTerminalInstallments] =
     useState(1);
 
   const [showCreditModal, setShowCreditModal] =
@@ -1092,7 +1096,7 @@ export default function App() {
         amount: effectiveFinalTotal,
         cashReceived: paymentMethod === "cash" ? Number(cashReceived || 0) : undefined,
         cashChange: paymentMethod === "cash" ? Number(cashReceived || 0) - effectiveFinalTotal : undefined,
-        installments: paymentMethod === "check" ? checkInstallments : paymentMethod === "credit" ? creditInstallments : 1,
+        installments: paymentMethod === "check" ? checkInstallments : paymentMethod === "credit" ? creditInstallments : paymentMethod === "terminal" ? terminalInstallments : 1,
       }];
     })();
     if (!parts) return;
@@ -1147,6 +1151,7 @@ export default function App() {
     setCashReceived("");
     setCheckInstallments(1);
     setCreditInstallments(1);
+    setTerminalInstallments(1);
     setModalPayments([]);
     setModalPaymentAmount("");
   };
@@ -1817,6 +1822,41 @@ export default function App() {
     });
   };
 
+  const markProductOutOfStock = (dayId: number, product: Product) => {
+    const day = saleDays.find(d => d.id === dayId);
+    if (!day) return;
+    const affectedOrders = (day.preOrders ?? []).filter(o => o.items.some(i => i.id === product.id));
+    if (affectedOrders.length === 0) {
+      addToast(`המוצר "${product.name}" לא מופיע באף הזמנה קיימת`, "info");
+      return;
+    }
+    showConfirm({
+      title: "סימון מוצר כחסר במלאי",
+      message: `"${product.name}" מופיע ב-${affectedOrders.length} הזמנות. הוא יוסר מכל ההזמנות הללו, וללקוחות תתווסף בדף ההזמנה המודפס הערה שהמוצר חסר וקוזז מההזמנה.`,
+      confirmLabel: "הסר מההזמנות",
+      confirmVariant: "danger",
+      onConfirm: () => {
+        setSaleDays(prev => prev.map(d => {
+          if (d.id !== dayId) return d;
+          const updatedOrders = (d.preOrders ?? []).map(order => {
+            const matching = order.items.filter(i => i.id === product.id);
+            if (matching.length === 0) return order;
+            const removedQty = matching.reduce((s, i) => s + i.qty, 0);
+            const note = `מוצר "${product.name}" (${removedQty} יח') שהזמנתם אינו במלאי וקוזז מההזמנה שלכם`;
+            return {
+              ...order,
+              items: order.items.filter(i => i.id !== product.id),
+              shortageNotes: [...(order.shortageNotes ?? []), note],
+            };
+          });
+          return { ...d, preOrders: updatedOrders };
+        }));
+        logActivity(`סימון מוצר חסר במלאי — ${product.name} (הוסר מ-${affectedOrders.length} הזמנות)`);
+        addToast(`המוצר "${product.name}" הוסר מ-${affectedOrders.length} הזמנות`, "success");
+      },
+    });
+  };
+
   const buildOrderHtml = (order: PreOrder, dayName: string, printNote?: string) => {
     const saleDay = saleDays.find(d => d.preOrders.some(o => o.id === order.id));
     const products = saleDay?.products ?? activeProducts;
@@ -1851,6 +1891,7 @@ export default function App() {
           ${order.customerPhone ? ` &nbsp;|&nbsp; ${order.customerPhone}` : ""}
         </div>
         ${order.notes ? `<div class="notes">הערות: ${order.notes}</div>` : ""}
+        ${(order.shortageNotes ?? []).length > 0 ? `<div class="shortage-notes">${(order.shortageNotes ?? []).map(n => `<div>⚠ ${n}</div>`).join("")}</div>` : ""}
         <table>
           <thead><tr><th style="width:36px;text-align:center">סימון</th><th style="width:44px;text-align:center">כמות</th><th>מוצר</th><th style="text-align:center">מחיר ליחידה</th><th style="text-align:center">סה"כ</th></tr></thead>
           <tbody>${rows}</tbody>
@@ -1869,6 +1910,7 @@ export default function App() {
     .order-header { font-size: 16px; margin-bottom: 6px; }
     .day-name { font-size: 18px; font-weight: bold; margin-bottom: 8px; border-bottom: 2px solid #ccc; padding-bottom: 6px; }
     .notes { color: #059669; font-size: 13px; margin-bottom: 8px; }
+    .shortage-notes { background: #fef2f2; border: 1px solid #fca5a5; border-radius: 6px; padding: 6px 10px; font-size: 13px; color: #991b1b; font-weight: bold; margin-bottom: 8px; }
     .print-note { background: #fef9c3; border: 1px solid #fde047; border-radius: 6px; padding: 6px 10px; font-size: 13px; color: #854d0e; margin-top: 10px; white-space: pre-line; }
     table { width: 100%; border-collapse: collapse; margin-top: 8px; }
     th, td { padding: 6px 8px; border: 1px solid #ddd; text-align: right; }
@@ -2197,7 +2239,7 @@ export default function App() {
         const notes = [
           (rec.Field3Max || "").trim(),
           rec.Field95 ? `תחנת חלוקה: ${rec.Field95}` : "",
-          rec.Field25 ? `מייל: ${rec.Field25}` : "",
+          rec.Field4 ? `טלפון נוסף: ${rec.Field4}` : "",
         ].filter(Boolean).join("\n");
 
         const items: CartItem[] = [];
@@ -4169,6 +4211,9 @@ const importBackup = async (
                                         <td style={{ ...tdS, textAlign: "center" as const }}>
                                           <div style={{ display: "flex", gap: "3px", justifyContent: "center", alignItems: "center" }}>
                                             <button onClick={() => startEditProduct(product)} className="cc-btn" style={btn("primary", "sm")}>ערוך</button>
+                                            {detailDay.type === "preorder" && (
+                                              <button onClick={() => markProductOutOfStock(effectiveDayId!, product)} className="cc-btn" style={btn("warning", "sm")} title="מסיר את המוצר מכל ההזמנות הקיימות ומוסיף הערה בדף ההזמנה">חסר במלאי</button>
+                                            )}
                                             <button onClick={() => showConfirm({
                                               title: "מחיקת מוצר", message: "למחוק מוצר זה מהמכירה?", itemName: product.name,
                                               confirmLabel: "מחק", confirmVariant: "danger",
@@ -4202,6 +4247,9 @@ const importBackup = async (
                                   </div>
                                   <div style={{ display: "flex", gap: "4px" }}>
                                     <button onClick={() => startEditProduct(product)} className="cc-btn" style={btn("primary", "sm")}>ערוך</button>
+                                    {detailDay.type === "preorder" && (
+                                      <button onClick={() => markProductOutOfStock(effectiveDayId!, product)} className="cc-btn" style={btn("warning", "sm")} title="מסיר את המוצר מכל ההזמנות הקיימות ומוסיף הערה בדף ההזמנה">חסר במלאי</button>
+                                    )}
                                     <button onClick={() => showConfirm({
                                       title: "מחיקת מוצר", message: "למחוק מוצר זה?", itemName: product.name,
                                       confirmLabel: "מחק", confirmVariant: "danger",
@@ -4620,7 +4668,7 @@ const importBackup = async (
                                           <td style={{ ...tdS, textAlign: "center" as const, fontWeight: 700, color: tx.isReturn ? "#dc2626" : "#16a34a" }}>{formatCurrency(tx.finalTotal)}</td>
                                           <td style={{ ...tdS, textAlign: "center" as const }}>
                                             <span style={{ fontSize: "12px", fontWeight: 600, background: tx.isReturn ? "#fee2e2" : "#e0f2fe", color: tx.isReturn ? "#dc2626" : "#0891b2", borderRadius: "8px", padding: "2px 8px" }}>
-                                              {tx.isReturn ? "↩ החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : "אשראי").join(" + ") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי" }[tx.paymentMethod ?? ""] ?? tx.paymentMethod ?? "")}
+                                              {tx.isReturn ? "↩ החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : p.method === "terminal" ? "מסוף אשראי" : "אשראי").join(" + ") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי" }[tx.paymentMethod ?? ""] ?? tx.paymentMethod ?? "")}
                                             </span>
                                           </td>
                                           <td style={{ ...tdS, textAlign: "center" as const, fontSize: "12px", color: "#64748b" }}>{fmtDate(tx)}</td>
@@ -4665,7 +4713,7 @@ const importBackup = async (
                                       <span>{tx.customerPhone || "—"}</span>
                                       <span>{tx.seller}</span>
                                       <span style={{ background: tx.isReturn ? "#fee2e2" : "#e0f2fe", color: tx.isReturn ? "#dc2626" : "#0891b2", borderRadius: "6px", padding: "1px 6px", fontWeight: 600 }}>
-                                        {tx.isReturn ? "החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : "אשראי").join("+") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי" }[tx.paymentMethod ?? ""] ?? "")}
+                                        {tx.isReturn ? "החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : p.method === "terminal" ? "מסוף אשראי" : "אשראי").join("+") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי" }[tx.paymentMethod ?? ""] ?? "")}
                                       </span>
                                       <span>{fmtDate(tx)}</span>
                                     </div>
@@ -4717,7 +4765,7 @@ const importBackup = async (
                             byMethod[m] = (byMethod[m] ?? 0) + t.finalTotal;
                           }
                         });
-                        const methodLabel = (m: string) => ({ cash: "מזומן", check: "המחאה", credit: "אשראי" }[m] ?? (m || "לא ידוע"));
+                        const methodLabel = (m: string) => ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי" }[m] ?? (m || "לא ידוע"));
                         const summaryItems: { label: string; value: string; color?: string }[] = [
                           { label: "עסקאות", value: formatTransactionCount(sales.length), color: "#1e40af" },
                           { label: "מכירות ברוטו", value: formatCurrency(grossTotal), color: "#15803d" },
@@ -5965,7 +6013,7 @@ const importBackup = async (
           const doExport = () => {
             const allProductNames = [...new Set(reportEntries.flatMap(({ transaction: t }) => t.items.map(i => i.name)))];
             const transactionsRows = reportEntries.map(({ transaction: t, saleDay }) => {
-              const paymentLabels: Record<string, string> = { cash: "מזומן", credit: "אשראי", check: "המחאה" };
+              const paymentLabels: Record<string, string> = { cash: "מזומן", credit: "אשראי", check: "המחאה", terminal: "מסוף אשראי" };
               const row: Record<string, string | number> = {};
               if (isAllDays) row["יום מכירה"] = saleDay.name;
               row["תאריך"] = t.date;
@@ -7609,7 +7657,7 @@ const importBackup = async (
         const nonCashAmt = modalPaymentAmount === "" ? remaining : (Number(modalPaymentAmount) || 0);
         const curAmt = paymentMethod === "cash" ? cashAmt : nonCashAmt;
         const isLast = curAmt >= remaining - 0.005 && remaining > 0;
-        const mLabel = (m: string) => m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : "אשראי";
+        const mLabel = (m: string) => m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : m === "terminal" ? "מסוף אשראי" : "אשראי";
         const closeModal = () => { setShowPaymentModal(false); setPaymentModalError(""); setModalPayments([]); setModalPaymentAmount(""); setCashReceived(""); };
 
         const doPayNow = () => {
@@ -7626,7 +7674,7 @@ const importBackup = async (
           } else {
             if (nonCashAmt <= 0) { setPaymentModalError("יש להזין סכום לתשלום"); return; }
             const actualAmt = Math.round(Math.min(nonCashAmt, remaining) * 100) / 100;
-            const newPart: PaymentPart = { method: paymentMethod as PaymentPart["method"], amount: actualAmt, installments: paymentMethod === "check" ? checkInstallments : creditInstallments };
+            const newPart: PaymentPart = { method: paymentMethod as PaymentPart["method"], amount: actualAmt, installments: paymentMethod === "check" ? checkInstallments : paymentMethod === "terminal" ? terminalInstallments : creditInstallments };
             const allParts = [...modalPayments, newPart];
             const newRemaining = Math.round((finalTotal - allParts.reduce((s, p) => s + p.amount, 0)) * 100) / 100;
             setPaymentModalError("");
@@ -7680,8 +7728,8 @@ const importBackup = async (
               )}
 
               {/* אמצעי תשלום */}
-              <div style={{ display: "flex", gap: "8px" }}>
-                {(["cash","check","credit"] as const).map(m => (
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" as const }}>
+                {(["cash","check","credit","terminal"] as const).map(m => (
                   <button key={m} onClick={() => { setPaymentMethod(m); setCashReceived(""); setPaymentModalError(""); }}
                     className="cc-btn" style={segmentBtn(paymentMethod === m)}>
                     {mLabel(m)}
@@ -7706,8 +7754,8 @@ const importBackup = async (
                 </div>
               )}
 
-              {/* אשראי / צ'ק — סכום לתשלום */}
-              {(paymentMethod === "check" || paymentMethod === "credit") && (
+              {/* אשראי / צ'ק / מסוף — סכום לתשלום */}
+              {(paymentMethod === "check" || paymentMethod === "credit" || paymentMethod === "terminal") && (
                 <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
                   <span style={{ fontSize: "13px", fontWeight: 600, whiteSpace: "nowrap", color: "#374151" }}>סכום לתשלום:</span>
                   <input type="number" placeholder={`₪${remaining.toFixed(2)}`} value={modalPaymentAmount}
@@ -7717,12 +7765,17 @@ const importBackup = async (
                 </div>
               )}
 
-              {/* תשלומים (צ'ק / אשראי) */}
-              {(paymentMethod === "check" || paymentMethod === "credit") && (
+              {/* תשלומים (צ'ק / אשראי / מסוף) */}
+              {(paymentMethod === "check" || paymentMethod === "credit" || paymentMethod === "terminal") && (
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                   <span style={{ fontSize: "14px", fontWeight: 600 }}>מספר תשלומים:</span>
-                  <select value={paymentMethod === "check" ? checkInstallments : creditInstallments}
-                    onChange={e => paymentMethod === "check" ? setCheckInstallments(Number(e.target.value)) : setCreditInstallments(Number(e.target.value))}
+                  <select value={paymentMethod === "check" ? checkInstallments : paymentMethod === "terminal" ? terminalInstallments : creditInstallments}
+                    onChange={e => {
+                      const v = Number(e.target.value);
+                      if (paymentMethod === "check") setCheckInstallments(v);
+                      else if (paymentMethod === "terminal") setTerminalInstallments(v);
+                      else setCreditInstallments(v);
+                    }}
                     style={{ padding: "8px 12px", borderRadius: "10px", border: "1px solid #cbd5e1", fontSize: "14px" }}>
                     <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
                   </select>
