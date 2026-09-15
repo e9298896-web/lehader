@@ -397,6 +397,11 @@ export default function App() {
   const [historyCustomerId, setHistoryCustomerId] =
     useState<number | null>(null);
   const [expandedTransactionId, setExpandedTransactionId] = useState<number | null>(null);
+  const [editingTxForm, setEditingTxForm] = useState<{
+    dayId: number; txId: number; customerName: string;
+    paymentMethod: "cash" | "check" | "credit" | "terminal";
+    installments: number; cashReceived: string;
+  } | null>(null);
 
   const [selectedReportType, setSelectedReportType] =
     useState<"daily" | "monthly" | "category" | "customer" | "seller">(
@@ -1147,6 +1152,11 @@ export default function App() {
     setCart([]);
     setManualDiscountAmount("");
     setShowCreditModal(false);
+    setCreditPaymentSuccess(false);
+    setCreditPaymentProcessing(false);
+    setCreditPaymentError("");
+    creditPriorPaymentsRef.current = [];
+    creditChargeAmountRef.current = 0;
     setShowPaymentModal(false);
     setCashReceived("");
     setCheckInstallments(1);
@@ -1219,14 +1229,22 @@ export default function App() {
         setCreditPaymentSuccess(true);
         setTimeout(() => {
           const prior = creditPriorPaymentsRef.current;
-          if (prior.length > 0) {
-            const creditAmt = creditChargeAmountRef.current;
-            completeSale([...prior, { method: "credit", amount: creditAmt, installments: creditInstallments }]);
-          } else {
-            completeSale();
-          }
+          const creditAmt = creditChargeAmountRef.current;
+          const allParts: PaymentPart[] = [...prior, { method: "credit", amount: creditAmt, installments: creditInstallments }];
+          const totalPaid = Math.round(allParts.reduce((s, p) => s + p.amount, 0) * 100) / 100;
+          const stillOwed = Math.round((finalTotal - totalPaid) * 100) / 100;
           creditPriorPaymentsRef.current = [];
           creditChargeAmountRef.current = 0;
+          if (stillOwed <= 0.005) {
+            completeSale(allParts);
+          } else {
+            // חויב בהצלחה רק חלק מהסכום — נשארת יתרה, חוזרים למודל התשלום כדי לגבות אותה באמצעי אחר
+            setModalPayments(allParts);
+            setModalPaymentAmount("");
+            setShowCreditModal(false);
+            setCreditPaymentSuccess(false);
+            setShowPaymentModal(true);
+          }
         }, 2000);
       } else {
         const parts: string[] = [];
@@ -1336,6 +1354,49 @@ export default function App() {
     setReturnSearch("");
     setReturnSourceId(null);
     setReturnQtys({});
+  };
+
+  const methodLabelHe = (m: string) => ({ cash: "מזומן", check: "צ'ק", credit: "אשראי", terminal: "מסוף אשראי" }[m] ?? m);
+
+  const openEditTransaction = (dayId: number, tx: Transaction) => {
+    setEditingTxForm({
+      dayId,
+      txId: tx.id,
+      customerName: tx.customerName,
+      paymentMethod: (tx.paymentMethod as "cash" | "check" | "credit" | "terminal" | undefined) ?? "cash",
+      installments: tx.installments ?? 1,
+      cashReceived: tx.cashReceived != null ? String(tx.cashReceived) : "",
+    });
+  };
+
+  const saveTransactionEdit = () => {
+    if (!editingTxForm) return;
+    const { dayId, txId, customerName, paymentMethod, installments, cashReceived } = editingTxForm;
+    const trimmedName = customerName.trim() || "מזדמן";
+    let oldSummary = "";
+    setSaleDays(prev => prev.map(d => {
+      if (d.id !== dayId) return d;
+      return {
+        ...d,
+        transactions: (d.transactions ?? []).map(t => {
+          if (t.id !== txId) return t;
+          oldSummary = `${t.customerName} · ${methodLabelHe(t.paymentMethod ?? "")}`;
+          const cashRec = paymentMethod === "cash" ? Number(cashReceived || 0) : undefined;
+          const cashChange = paymentMethod === "cash" ? Math.max(0, (cashRec ?? 0) - t.finalTotal) : undefined;
+          return {
+            ...t,
+            customerName: trimmedName,
+            paymentMethod,
+            installments,
+            cashReceived: cashRec,
+            cashChange,
+          };
+        }),
+      };
+    }));
+    logActivity(`עריכת עסקה — ${oldSummary} ← ${trimmedName} · ${methodLabelHe(paymentMethod)}`);
+    setEditingTxForm(null);
+    addToast("העסקה עודכנה", "success");
   };
 
   const logActivity = (action: string) => {
@@ -4673,7 +4734,12 @@ const importBackup = async (
                                           </td>
                                           <td style={{ ...tdS, textAlign: "center" as const, fontSize: "12px", color: "#64748b" }}>{fmtDate(tx)}</td>
                                           <td style={{ ...tdS, textAlign: "center" as const }}>
-                                            <button onClick={() => setExpandedTransactionId(isExp ? null : tx.id)} className="cc-btn" style={btn("ghost", "sm")}>{isExp ? "▲" : "▼"}</button>
+                                            <div style={{ display: "flex", gap: "4px", justifyContent: "center" }}>
+                                              {!tx.isReturn && !tx.splitPayment && (
+                                                <button onClick={() => openEditTransaction(detailDay.id, tx)} className="cc-btn" style={btn("secondary", "sm")} title="עריכת שם לקוח ואמצעי תשלום">ערוך</button>
+                                              )}
+                                              <button onClick={() => setExpandedTransactionId(isExp ? null : tx.id)} className="cc-btn" style={btn("ghost", "sm")}>{isExp ? "▲" : "▼"}</button>
+                                            </div>
                                           </td>
                                         </tr>
                                         {isExp && (
@@ -4717,7 +4783,12 @@ const importBackup = async (
                                       </span>
                                       <span>{fmtDate(tx)}</span>
                                     </div>
-                                    <button onClick={() => setExpandedTransactionId(isExp ? null : tx.id)} className="cc-btn" style={btn("ghost", "sm")}>{isExp ? "▲ סגור" : "▼ פירוט"}</button>
+                                    <div style={{ display: "flex", gap: "4px" }}>
+                                      {!tx.isReturn && !tx.splitPayment && (
+                                        <button onClick={() => openEditTransaction(detailDay.id, tx)} className="cc-btn" style={btn("secondary", "sm")}>ערוך</button>
+                                      )}
+                                      <button onClick={() => setExpandedTransactionId(isExp ? null : tx.id)} className="cc-btn" style={btn("ghost", "sm")}>{isExp ? "▲ סגור" : "▼ פירוט"}</button>
+                                    </div>
                                     {isExp && (
                                       <div style={{ marginTop: "8px", borderTop: "1px solid #e2e8f0", paddingTop: "8px" }}>
                                         {tx.items.map((item, i) => (
@@ -7785,10 +7856,12 @@ const importBackup = async (
               {/* כפתורים */}
               <div style={{ display: "flex", gap: "8px" }}>
                 <button onClick={closeModal} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>חזרה לקופה</button>
-                {paymentMethod === "credit" && (modalPaymentAmount === "" || Number(modalPaymentAmount) >= remaining - 0.005) ? (
+                {paymentMethod === "credit" ? (
                   <button onClick={() => {
+                    if (nonCashAmt <= 0) { setPaymentModalError("יש להזין סכום לתשלום"); return; }
                     creditPriorPaymentsRef.current = [...modalPayments];
-                    creditChargeAmountRef.current = remaining;
+                    creditChargeAmountRef.current = Math.round(Math.min(nonCashAmt, remaining) * 100) / 100;
+                    setPaymentModalError("");
                     setShowPaymentModal(false);
                     setShowCreditModal(true);
                   }}
@@ -7805,6 +7878,58 @@ const importBackup = async (
           </div>
         );
       })()}
+
+      {/* מודאל עריכת עסקה (שם לקוח + אמצעי תשלום) */}
+      {editingTxForm && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10020, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setEditingTxForm(null)}>
+          <div style={{ background: "white", borderRadius: "20px", padding: "28px", width: "420px", maxWidth: "95%", direction: "rtl", boxShadow: "0 16px 40px rgba(0,0,0,0.25)" }}
+            onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 20px", fontSize: "17px" }}>עריכת עסקה</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <div>
+                <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>שם לקוח</label>
+                <input value={editingTxForm.customerName}
+                  onChange={e => setEditingTxForm(f => f && ({ ...f, customerName: e.target.value }))}
+                  placeholder="מזדמן" style={inputStyle} />
+              </div>
+              <div>
+                <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "6px" }}>אמצעי תשלום</label>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" as const }}>
+                  {(["cash", "check", "credit", "terminal"] as const).map(m => (
+                    <button key={m} onClick={() => setEditingTxForm(f => f && ({ ...f, paymentMethod: m }))}
+                      className="cc-btn" style={segmentBtn(editingTxForm.paymentMethod === m)}>
+                      {methodLabelHe(m)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {editingTxForm.paymentMethod === "cash" && (
+                <div>
+                  <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>סכום שהתקבל</label>
+                  <input type="number" value={editingTxForm.cashReceived}
+                    onChange={e => setEditingTxForm(f => f && ({ ...f, cashReceived: e.target.value }))}
+                    style={inputStyle} />
+                </div>
+              )}
+              {(editingTxForm.paymentMethod === "check" || editingTxForm.paymentMethod === "credit" || editingTxForm.paymentMethod === "terminal") && (
+                <div>
+                  <label style={{ fontSize: "13px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>מספר תשלומים</label>
+                  <select value={editingTxForm.installments}
+                    onChange={e => setEditingTxForm(f => f && ({ ...f, installments: Number(e.target.value) }))}
+                    style={inputStyle}>
+                    <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
+                  </select>
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: "10px", marginTop: "24px" }}>
+              <button onClick={() => setEditingTxForm(null)} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>ביטול</button>
+              <button onClick={saveTransactionEdit} className="cc-btn" style={{ ...btn("primary"), flex: 1 }}>שמור</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* מודאל החזרת מוצר */}
       {showReturnModal && (() => {
