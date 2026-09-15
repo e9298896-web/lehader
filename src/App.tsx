@@ -158,7 +158,7 @@ type Customer = {
 
 
 type PaymentPart = {
-  method: "cash" | "check" | "credit" | "terminal";
+  method: "cash" | "check" | "credit" | "terminal" | "exchange_credit";
   amount: number;
   cashReceived?: number;
   cashChange?: number;
@@ -533,6 +533,8 @@ export default function App() {
   const [returnSearch, setReturnSearch] = useState("");
   const [returnSourceId, setReturnSourceId] = useState<number | null>(null);
   const [returnQtys, setReturnQtys] = useState<Record<number, number>>({});
+  const [exchangeItems, setExchangeItems] = useState<CartItem[]>([]);
+  const [exchangeProductSearch, setExchangeProductSearch] = useState("");
   const [customersTabSearch, setCustomersTabSearch] = useState("");
   const [showNewCustomerModalDayId, setShowNewCustomerModalDayId] = useState<number | null>(null);
   const [productSearch, setProductSearch] = useState("");
@@ -889,14 +891,21 @@ export default function App() {
     return words.every(w => parts.some(p => p.startsWith(w)));
   };
   const customerResults =
-    isPreorderMode || rawSearch === "" || rawSearch.length < 2
+    rawSearch === "" || rawSearch.length < 2
       ? []
       : activeCustomers.filter((customer) => {
           const isPhoneSearch = /^[0-9]+$/.test(rawSearch);
-          if (isPhoneSearch) {
-            return phoneMatch(customer.phone, rawSearch);
+          const matches = isPhoneSearch ? phoneMatch(customer.phone, rawSearch) : nameMatch(customer.name, rawSearch);
+          if (!matches) return false;
+          // בהזמנות מראש: לא מציגים כאן לקוח שיש לו הזמנה ממתינה — לזה יש את תוצאות ההזמנות למטה.
+          // לקוח שכבר שילם (או שאין לו הזמנה בכלל) כן מוצג, כדי שאפשר יהיה לחייב אותו שוב על פריטים נוספים.
+          if (isPreorderMode) {
+            const hasPendingOrder = (activeSaleDay?.preOrders ?? []).some(o =>
+              o.status === "pending" && (o.customerName === customer.name || (customer.phone && o.customerPhone === customer.phone))
+            );
+            if (hasPendingOrder) return false;
           }
-          return nameMatch(customer.name, rawSearch);
+          return true;
         }).slice(0, 10);
 
   const preOrderSearchResults =
@@ -1350,13 +1359,85 @@ export default function App() {
       return ret ? { ...p, stock: p.stock + ret.qty } : p;
     }));
     logActivity(`החזרה — ${sourceTx.customerName} ₪${returnTotal.toFixed(2)}`);
+    resetReturnModalState();
+  };
+
+  const resetReturnModalState = () => {
     setShowReturnModal(false);
     setReturnSearch("");
     setReturnSourceId(null);
     setReturnQtys({});
+    setExchangeItems([]);
+    setExchangeProductSearch("");
   };
 
-  const methodLabelHe = (m: string) => ({ cash: "מזומן", check: "צ'ק", credit: "אשראי", terminal: "מסוף אשראי" }[m] ?? m);
+  const confirmExchange = (sourceTx: Transaction, qtys: Record<number, number>, newItems: CartItem[]) => {
+    const returnItems: CartItem[] = sourceTx.items
+      .filter(item => (qtys[item.id] ?? 0) > 0)
+      .map(item => ({ ...item, qty: qtys[item.id] }));
+    if (returnItems.length === 0 && newItems.length === 0) return;
+
+    const disc = sourceTx.discountPercent ?? 0;
+    const grossReturn = returnItems.reduce((s, i) => s + i.price * i.qty, 0);
+    const returnTotal = Math.round(grossReturn * (1 - disc / 100) * 100) / 100;
+
+    if (returnItems.length > 0) {
+      const returnTx: Transaction = {
+        id: Date.now(),
+        items: returnItems,
+        total: -grossReturn,
+        finalTotal: -returnTotal,
+        discountPercent: disc,
+        date: new Date().toLocaleString(),
+        dateISO: new Date().toISOString(),
+        seller: currentSeller,
+        customerId: sourceTx.customerId,
+        customerName: sourceTx.customerName,
+        customerPhone: sourceTx.customerPhone,
+        isReturn: true,
+        returnForId: sourceTx.id,
+        ...(activeSaleDay ? { saleDayId: activeSaleDay.id } : {}),
+        ...(sourceTx.preOrderId ? { preOrderId: sourceTx.preOrderId } : {}),
+      };
+      setActiveTransactions(prev => [returnTx, ...prev]);
+      setActiveProducts(prev => prev.map(p => {
+        const ret = returnItems.find(i => i.id === p.id);
+        return ret ? { ...p, stock: p.stock + ret.qty } : p;
+      }));
+      logActivity(`החזרה — ${sourceTx.customerName} ₪${returnTotal.toFixed(2)}`);
+    }
+
+    if (newItems.length === 0) {
+      resetReturnModalState();
+      return;
+    }
+
+    const exchangeGross = newItems.reduce((s, i) => s + i.price * i.qty, 0);
+    const exchangeTotal = Math.round(exchangeGross * (1 - disc / 100) * 100) / 100;
+    const usedCredit = Math.round(Math.min(returnTotal, exchangeTotal) * 100) / 100;
+    const amountToRefund = Math.round((returnTotal - usedCredit) * 100) / 100;
+
+    const matchedCustomer = activeCustomers.find(c =>
+      (sourceTx.customerPhone && c.phone === sourceTx.customerPhone) || c.name === sourceTx.customerName
+    ) ?? { id: 0, name: sourceTx.customerName, phone: sourceTx.customerPhone, idNumber: "", customerType: "1" as CustomerType };
+
+    setCart(newItems);
+    setSelectedCustomer(matchedCustomer);
+    setModalPayments(usedCredit > 0.005 ? [{ method: "exchange_credit", amount: usedCredit, installments: 1 }] : []);
+    setModalPaymentAmount("");
+    setCashReceived("");
+    setPaymentMethod("cash");
+
+    resetReturnModalState();
+
+    if (amountToRefund > 0.005) {
+      showAlert("יש להחזיר כסף ללקוח", `לאחר קיזוז מול המוצר החדש, יש להחזיר ללקוח ₪${amountToRefund.toFixed(2)} — במזומן, או בזיכוי בכרטיס דרך המסוף שלכם (האפליקציה לא מבצעת זיכוי אוטומטי בנדרים פלוס).`);
+    }
+
+    setShowPaymentModal(true);
+  };
+
+  const methodLabelHe = (m: string) => ({ cash: "מזומן", check: "צ'ק", credit: "אשראי", terminal: "מסוף אשראי", exchange_credit: "זיכוי החזרה" }[m] ?? m);
 
   const openEditTransaction = (dayId: number, tx: Transaction) => {
     setEditingTxForm({
@@ -4729,7 +4810,7 @@ const importBackup = async (
                                           <td style={{ ...tdS, textAlign: "center" as const, fontWeight: 700, color: tx.isReturn ? "#dc2626" : "#16a34a" }}>{formatCurrency(tx.finalTotal)}</td>
                                           <td style={{ ...tdS, textAlign: "center" as const }}>
                                             <span style={{ fontSize: "12px", fontWeight: 600, background: tx.isReturn ? "#fee2e2" : "#e0f2fe", color: tx.isReturn ? "#dc2626" : "#0891b2", borderRadius: "8px", padding: "2px 8px" }}>
-                                              {tx.isReturn ? "↩ החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : p.method === "terminal" ? "מסוף אשראי" : "אשראי").join(" + ") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי" }[tx.paymentMethod ?? ""] ?? tx.paymentMethod ?? "")}
+                                              {tx.isReturn ? "↩ החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : p.method === "terminal" ? "מסוף אשראי" : p.method === "exchange_credit" ? "זיכוי החזרה" : "אשראי").join(" + ") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי", exchange_credit: "זיכוי החזרה" }[tx.paymentMethod ?? ""] ?? tx.paymentMethod ?? "")}
                                             </span>
                                           </td>
                                           <td style={{ ...tdS, textAlign: "center" as const, fontSize: "12px", color: "#64748b" }}>{fmtDate(tx)}</td>
@@ -4779,7 +4860,7 @@ const importBackup = async (
                                       <span>{tx.customerPhone || "—"}</span>
                                       <span>{tx.seller}</span>
                                       <span style={{ background: tx.isReturn ? "#fee2e2" : "#e0f2fe", color: tx.isReturn ? "#dc2626" : "#0891b2", borderRadius: "6px", padding: "1px 6px", fontWeight: 600 }}>
-                                        {tx.isReturn ? "החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : p.method === "terminal" ? "מסוף אשראי" : "אשראי").join("+") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי" }[tx.paymentMethod ?? ""] ?? "")}
+                                        {tx.isReturn ? "החזרה" : tx.splitPayment ? tx.splitPayment.payments.map(p => p.method === "cash" ? "מזומן" : p.method === "check" ? "צ'ק" : p.method === "terminal" ? "מסוף אשראי" : p.method === "exchange_credit" ? "זיכוי החזרה" : "אשראי").join("+") : ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי", exchange_credit: "זיכוי החזרה" }[tx.paymentMethod ?? ""] ?? "")}
                                       </span>
                                       <span>{fmtDate(tx)}</span>
                                     </div>
@@ -4836,7 +4917,7 @@ const importBackup = async (
                             byMethod[m] = (byMethod[m] ?? 0) + t.finalTotal;
                           }
                         });
-                        const methodLabel = (m: string) => ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי" }[m] ?? (m || "לא ידוע"));
+                        const methodLabel = (m: string) => ({ cash: "מזומן", check: "המחאה", credit: "אשראי", terminal: "מסוף אשראי", exchange_credit: "זיכוי החזרה" }[m] ?? (m || "לא ידוע"));
                         const summaryItems: { label: string; value: string; color?: string }[] = [
                           { label: "עסקאות", value: formatTransactionCount(sales.length), color: "#1e40af" },
                           { label: "מכירות ברוטו", value: formatCurrency(grossTotal), color: "#15803d" },
@@ -6084,7 +6165,7 @@ const importBackup = async (
           const doExport = () => {
             const allProductNames = [...new Set(reportEntries.flatMap(({ transaction: t }) => t.items.map(i => i.name)))];
             const transactionsRows = reportEntries.map(({ transaction: t, saleDay }) => {
-              const paymentLabels: Record<string, string> = { cash: "מזומן", credit: "אשראי", check: "המחאה", terminal: "מסוף אשראי" };
+              const paymentLabels: Record<string, string> = { cash: "מזומן", credit: "אשראי", check: "המחאה", terminal: "מסוף אשראי", exchange_credit: "זיכוי החזרה" };
               const row: Record<string, string | number> = {};
               if (isAllDays) row["יום מכירה"] = saleDay.name;
               row["תאריך"] = t.date;
@@ -7728,7 +7809,7 @@ const importBackup = async (
         const nonCashAmt = modalPaymentAmount === "" ? remaining : (Number(modalPaymentAmount) || 0);
         const curAmt = paymentMethod === "cash" ? cashAmt : nonCashAmt;
         const isLast = curAmt >= remaining - 0.005 && remaining > 0;
-        const mLabel = (m: string) => m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : m === "terminal" ? "מסוף אשראי" : "אשראי";
+        const mLabel = (m: string) => m === "cash" ? "מזומן" : m === "check" ? "צ'ק" : m === "terminal" ? "מסוף אשראי" : m === "exchange_credit" ? "זיכוי החזרה" : "אשראי";
         const closeModal = () => { setShowPaymentModal(false); setPaymentModalError(""); setModalPayments([]); setModalPaymentAmount(""); setCashReceived(""); };
 
         const doPayNow = () => {
@@ -7856,7 +7937,11 @@ const importBackup = async (
               {/* כפתורים */}
               <div style={{ display: "flex", gap: "8px" }}>
                 <button onClick={closeModal} className="cc-btn" style={{ ...btn("secondary"), flex: 1 }}>חזרה לקופה</button>
-                {paymentMethod === "credit" ? (
+                {remaining <= 0.005 ? (
+                  <button onClick={() => completeSale(modalPayments)} className="cc-btn" style={{ ...btn("success", "lg"), flex: 2 }}>
+                    ✓ סיים עסקה (מכוסה במלואו מזיכוי החזרה)
+                  </button>
+                ) : paymentMethod === "credit" ? (
                   <button onClick={() => {
                     if (nonCashAmt <= 0) { setPaymentModalError("יש להזין סכום לתשלום"); return; }
                     creditPriorPaymentsRef.current = [...modalPayments];
@@ -7958,12 +8043,12 @@ const importBackup = async (
         const returnTotal = grossReturn * (1 - disc / 100);
         return (
           <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 10002 }}
-            onClick={() => setShowReturnModal(false)}>
+            onClick={resetReturnModalState}>
             <div style={{ background: "white", borderRadius: "16px", padding: "24px", width: "620px", maxWidth: "95%", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 10px 30px rgba(0,0,0,0.25)", direction: "rtl" }}
               onClick={e => e.stopPropagation()}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
                 <h3 style={{ margin: 0 }}>↩ החזרת מוצר</h3>
-                <button onClick={() => setShowReturnModal(false)} className="cc-btn" style={btn("secondary", "sm")}>סגור</button>
+                <button onClick={resetReturnModalState} className="cc-btn" style={btn("secondary", "sm")}>סגור</button>
               </div>
 
               {!sourceTx ? (
@@ -8021,10 +8106,91 @@ const importBackup = async (
                       );
                     })}
                   </div>
+
+                  {/* ── החלפה: הוספת מוצר חדש במקום המוחזר ── */}
+                  <div style={{ borderTop: "1px solid #f1f5f9", marginTop: "8px", paddingTop: "8px" }}>
+                    <div style={{ fontSize: "13px", fontWeight: 700, color: "#374151", marginBottom: "6px" }}>מוצר חדש במקום (אופציונלי — להחלפה)</div>
+                    <input
+                      placeholder="חיפוש מוצר להוספה..."
+                      value={exchangeProductSearch}
+                      onChange={e => setExchangeProductSearch(e.target.value)}
+                      style={{ padding: "8px 10px", border: "1px solid #cbd5e1", borderRadius: "8px", fontSize: "13px", width: "100%", boxSizing: "border-box" as const, direction: "rtl", textAlign: "right" }}
+                    />
+                    {exchangeProductSearch.trim().length > 0 && (
+                      <div style={{ maxHeight: "140px", overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: "8px", marginTop: "4px" }}>
+                        {activeProducts
+                          .filter(p => p.name.toLowerCase().includes(exchangeProductSearch.trim().toLowerCase()))
+                          .slice(0, 8)
+                          .map(p => (
+                            <div key={p.id} onClick={() => {
+                              setExchangeItems(prev => {
+                                const existing = prev.find(i => i.id === p.id);
+                                if (existing) return prev.map(i => i.id === p.id ? { ...i, qty: i.qty + 1 } : i);
+                                return [...prev, { id: p.id, name: p.name, price: p.price, qty: 1 }];
+                              });
+                              setExchangeProductSearch("");
+                            }}
+                              style={{ padding: "6px 10px", cursor: "pointer", borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", fontSize: "13px" }}>
+                              <span>{p.name}</span>
+                              <span style={{ color: "#6b7280" }}>{formatCurrency(p.price)}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                    {exchangeItems.length > 0 && (
+                      <div style={{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                        {exchangeItems.map(item => (
+                          <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "8px", padding: "6px 10px" }}>
+                            <span style={{ fontSize: "13px", fontWeight: 600 }}>{item.name}</span>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <input
+                                type="number" min={1}
+                                value={item.qty}
+                                onChange={e => {
+                                  const v = Math.max(1, Number(e.target.value));
+                                  setExchangeItems(prev => prev.map(i => i.id === item.id ? { ...i, qty: v } : i));
+                                }}
+                                style={{ width: "50px", padding: "4px 6px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "13px", textAlign: "center" }}
+                              />
+                              <span style={{ fontSize: "13px", color: "#374151" }}>{formatCurrency(item.price * item.qty)}</span>
+                              <button onClick={() => setExchangeItems(prev => prev.filter(i => i.id !== item.id))}
+                                className="cc-btn" style={{ ...iconBtn(), fontSize: "13px" }}>✕</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   {(() => {
                     const fullQtys = Object.fromEntries(sourceTx.items.map(i => [i.id, i.qty - (returnedQtyMap[sourceTx.id]?.[i.id] ?? 0)]).filter(([, v]) => (v as number) > 0));
                     const fullGross = sourceTx.items.reduce((s, i) => s + i.price * (fullQtys[i.id] ?? 0), 0);
                     const fullTotal = fullGross * (1 - (sourceTx.discountPercent ?? 0) / 100);
+
+                    if (exchangeItems.length > 0) {
+                      const exchangeGross = exchangeItems.reduce((s, i) => s + i.price * i.qty, 0);
+                      const exchangeTotal = exchangeGross * (1 - disc / 100);
+                      const netAmount = Math.round((exchangeTotal - returnTotal) * 100) / 100;
+                      return (
+                        <div style={{ borderTop: "2px solid #f1f5f9", paddingTop: "12px", marginTop: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px", color: "#6b7280" }}>
+                            <span>ערך מוחזר:</span><span>₪{returnTotal.toFixed(2)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px", color: "#6b7280" }}>
+                            <span>ערך מוצר חדש:</span><span>₪{exchangeTotal.toFixed(2)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: "16px" }}>
+                            <span>{netAmount >= 0 ? "לגבות מהלקוח:" : "להחזיר ללקוח:"}</span>
+                            <span style={{ color: netAmount >= 0 ? "#16a34a" : "#dc2626" }}>₪{Math.abs(netAmount).toFixed(2)}</span>
+                          </div>
+                          <button onClick={() => confirmExchange(sourceTx, returnQtys, exchangeItems)}
+                            className="cc-btn" style={{ ...btn("success", "lg"), width: "100%" }}>
+                            ✓ בצע החלפה
+                          </button>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div style={{ borderTop: "2px solid #f1f5f9", paddingTop: "12px", marginTop: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
                         {returnTotal > 0 && (
