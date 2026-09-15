@@ -3301,14 +3301,28 @@ const importBackup = async (
     const worksheet = workbook.Sheets[sheetName];
     const jsonData = XLSX.utils.sheet_to_json(worksheet, { raw: false });
     const importBase = Date.now();
-    const importedCustomers = (jsonData as any[]).map((row, idx) => ({
-      id: importBase * 10000 + idx,
-      name: String(row["שם לקוח"] || row["שם"] || "").trim(),
-      phone: String(row["טלפון"] || "").replace(".0", "").replace(/\D/g, ""),
-      idNumber: String(row["תעודת זהות"] || "").replace(".0", "").replace(/\D/g, ""),
-      customerType: String(row["סוג לקוח"] || "3") as CustomerType,
-    }));
+    const seenKeys = new Set<string>();
+    const importedCustomers: Customer[] = [];
+    (jsonData as any[]).forEach((row, idx) => {
+      const name = String(row["שם לקוח"] || row["שם"] || "").trim();
+      const phone = String(row["טלפון"] || "").replace(".0", "").replace(/\D/g, "");
+      if (!name && !phone) return;
+      const key = `${name.toLowerCase()}|${phone}`;
+      if (seenKeys.has(key)) return; // שורה כפולה (אותו שם+טלפון) באותו קובץ — לא נוספת שוב
+      seenKeys.add(key);
+      importedCustomers.push({
+        id: importBase * 10000 + idx,
+        name,
+        phone,
+        idNumber: String(row["תעודת זהות"] || "").replace(".0", "").replace(/\D/g, ""),
+        customerType: String(row["סוג לקוח"] || "3") as CustomerType,
+      });
+    });
     setSaleDays(prev => prev.map(d => d.id === dayId ? { ...d, customers: importedCustomers } : d));
+    const skipped = (jsonData as any[]).length - importedCustomers.length;
+    addToast(skipped > 0
+      ? `יובאו ${importedCustomers.length} לקוחות — ${skipped} שורות כפולות בקובץ דולגו`
+      : `יובאו ${importedCustomers.length} לקוחות`, "success");
     e.target.value = "";
   };
 
