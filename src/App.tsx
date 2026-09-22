@@ -31,6 +31,10 @@ const CC_BTN_CSS = [
   ".cc-product-tile:hover{border-color:#2563eb!important}",
   ".cc-nav-tab:hover{background:rgba(255,255,255,.18)!important}",
   ".cc-nav-tab:focus-visible{outline:2px solid rgba(255,255,255,.6);outline-offset:2px}",
+  ".thin-scroll-x{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}",
+  ".thin-scroll-x::-webkit-scrollbar{height:6px}",
+  ".thin-scroll-x::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}",
+  ".thin-scroll-x::-webkit-scrollbar-track{background:transparent}",
   ".cc-underline-tab:hover:not(:disabled){color:#374151!important}",
   ".cc-underline-tab:focus-visible{outline:2px solid #3b82f6;outline-offset:2px}",
   "@media(max-width:767px){.home-table-wrap{display:none!important}.home-cards{display:flex!important;flex-direction:column;gap:12px}}",
@@ -384,6 +388,26 @@ export default function App() {
 
   const [creditPaymentSuccess, setCreditPaymentSuccess] =
     useState(false);
+
+  const [swipeCapture, setSwipeCapture] = useState("");
+  const [swipeCopiedMsg, setSwipeCopiedMsg] = useState("");
+
+  const handleSwipeInput = (value: string) => {
+    setSwipeCapture(value);
+    if (value.includes("=")) {
+      const cardNumber = value.split("=")[0].replace(/\D/g, "");
+      if (cardNumber.length >= 12) {
+        navigator.clipboard.writeText(cardNumber).then(() => {
+          setSwipeCopiedMsg(`✓ מספר הכרטיס הועתק ללוח (${cardNumber.slice(0, 4)}••••${cardNumber.slice(-4)}) — הדביקו בשדה של נדרים`);
+        }).catch(() => {
+          setSwipeCopiedMsg(`מספר הכרטיס: ${cardNumber} (ההעתקה האוטומטית נכשלה, יש להעתיק ידנית)`);
+        });
+      } else {
+        setSwipeCopiedMsg("");
+      }
+      setSwipeCapture("");
+    }
+  };
 
   const [activePreOrderRef, setActivePreOrderRef] =
     useState<{ orderId: number; saleDayId: number } | null>(null);
@@ -1192,7 +1216,7 @@ export default function App() {
         PaymentType: "Ragil",
         Currency: "1",
         Zeout: "",
-        FirstName: selectedCustomer?.name ?? "לקוח",
+        FirstName: selectedCustomer?.name || "אנונימי",
         LastName: "",
         Street: "",
         City: "",
@@ -1760,6 +1784,7 @@ export default function App() {
     border: "none", borderBottom: active ? "3px solid #e2e8f0" : "3px solid transparent",
     padding: "12px 16px", fontSize: "14px", fontWeight: active ? 700 : 400,
     cursor: "pointer", whiteSpace: "nowrap" as const, transition: "all 0.15s", marginBottom: "-3px",
+    flexShrink: 0,
   });
   const menuTriggerBtn = (): React.CSSProperties => ({
     padding: "13px", background: "#7c3aed", color: "white",
@@ -1783,6 +1808,7 @@ export default function App() {
     color: active ? "#2563eb" : "#6b7280",
     fontWeight: active ? 700 : 400, fontSize: "14px",
     cursor: "pointer", whiteSpace: "nowrap" as const, marginBottom: "-2px", transition: "all 0.15s",
+    flexShrink: 0,
   });
 
   // ── central sale-day activation with cart check ──
@@ -3486,13 +3512,15 @@ const importBackup = async (
         {/* ── ניווט ניהול (מצב מנהל) ── */}
         {!cashierMode && (
           <div style={{ background: "#083f1e", display: "flex", alignItems: "stretch", position: "sticky", top: 0, zIndex: 1000, borderBottom: "3px solid #248f4b", paddingRight: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.15)" }}>
-            {([ ["home","ראשי"], ["sales","מכירות"], ["inventory","מלאי ומחסן"], ["reports","דוחות"], ["expenses","הוצאות"], ["settings","הגדרות"] ] as const).map(([key, label]) => (
-              <button key={key} onClick={() => setAdminTab(key as typeof adminTab)} className="cc-nav-tab"
-                style={navTabBtn(adminTab === key)}>
-                {label}
-              </button>
-            ))}
-            <div style={{ marginRight: "auto", display: "flex", alignItems: "center", gap: "10px", padding: "6px 12px" }}>
+            <div className="thin-scroll-x" style={{ display: "flex", minWidth: 0, paddingBottom: "6px" }}>
+              {([ ["home","ראשי"], ["sales","מכירות"], ["inventory","מלאי ומחסן"], ["reports","דוחות"], ["expenses","הוצאות"], ["settings","הגדרות"] ] as const).map(([key, label]) => (
+                <button key={key} onClick={() => setAdminTab(key as typeof adminTab)} className="cc-nav-tab"
+                  style={navTabBtn(adminTab === key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div style={{ marginRight: "auto", display: "flex", alignItems: "center", gap: "10px", padding: "6px 12px", flexShrink: 0 }}>
               <label style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", display: "flex", alignItems: "center", gap: "6px" }}>
                 מוכר:&nbsp;
                 <select value={currentSeller} onChange={e => setCurrentSeller(e.target.value)} style={{ padding: "4px 8px", borderRadius: "8px", fontSize: "13px", border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.15)", color: "white" }}>
@@ -5551,7 +5579,7 @@ const importBackup = async (
                 <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 800, color: "#111827" }}>הגדרות</h2>
                 <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>{settingsTabDescriptions[settingsTab]}</p>
               </div>
-              <div style={{ display: "flex", direction: "rtl" }}>
+              <div className="thin-scroll-x" style={{ display: "flex", direction: "rtl", paddingBottom: "6px" }}>
                 {([["sellers","מוכרים"],["backup","גיבוי ושחזור"],["integrity","תקינות נתונים"],["log","יומן פעילות"],["alerts","התראות מייל"],["payment","סליקת אשראי"],["security","אבטחה"]] as const).map(([key, label]) => (
                   <button key={key} onClick={() => setSettingsTab(key)} className="cc-underline-tab"
                     style={underlineTabBtn(settingsTab === key)}>
@@ -8291,9 +8319,29 @@ const importBackup = async (
               <span style={{ fontWeight: 700, fontSize: "18px" }}>
                 תשלום באשראי — ₪{(creditChargeAmountRef.current || effectiveFinalTotal).toFixed(2)} · {creditInstallments} תשלומים
               </span>
-              <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); setCreditPaymentSuccess(false); }}
+              <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); setCreditPaymentSuccess(false); setSwipeCapture(""); setSwipeCopiedMsg(""); }}
                 className="cc-btn" style={{ ...iconBtn(), fontSize: "22px" }}>✕</button>
             </div>
+            {!creditPaymentSuccess && (
+              <div style={{ padding: "10px 20px", background: "#eff6ff", borderBottom: "1px solid #dbeafe", flexShrink: 0, direction: "rtl" }}>
+                <div style={{ fontSize: "12px", color: "#1e40af", marginBottom: "6px", fontWeight: 600 }}>
+                  💳 סריקת כרטיס מגנטי (אופציונלי) — העבירו את הכרטיס כאן, המספר יועתק אוטומטית ללוח להדבקה בשדה למטה
+                </div>
+                <input
+                  type="text"
+                  value={swipeCapture}
+                  onChange={e => handleSwipeInput(e.target.value)}
+                  placeholder="לחצו כאן ואז העבירו את הכרטיס בקורא..."
+                  dir="ltr"
+                  style={{ ...inputStyle, width: "100%", fontSize: "14px", boxSizing: "border-box" }}
+                />
+                {swipeCopiedMsg && (
+                  <div style={{ fontSize: "13px", color: "#15803d", fontWeight: 700, marginTop: "6px" }}>
+                    {swipeCopiedMsg}
+                  </div>
+                )}
+              </div>
+            )}
             {creditPaymentSuccess ? (
               <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "16px", background: "#f0fdf4" }}>
                 <div style={{ fontSize: "64px", lineHeight: 1 }}>✅</div>
@@ -8315,7 +8363,7 @@ const importBackup = async (
             )}
             {!creditPaymentSuccess && (
               <div style={{ padding: "16px 20px", borderTop: "1px solid #e2e8f0", display: "flex", gap: "12px", flexShrink: 0 }}>
-                <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); setCreditPaymentSuccess(false); }}
+                <button onClick={() => { setShowCreditModal(false); setCreditPaymentError(""); setCreditPaymentProcessing(false); setCreditPaymentSuccess(false); setSwipeCapture(""); setSwipeCopiedMsg(""); }}
                   className="cc-btn" style={{ ...btn("secondary", "lg"), flex: 1 }}>
                   ביטול
                 </button>
