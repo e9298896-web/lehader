@@ -586,7 +586,7 @@ export default function App() {
 
   // ── Internal tab states ──
   const [reportTab, setReportTab] = useState<"sales" | "breakdown" | "inventory">("sales");
-  const [breakdownTab, setBreakdownTab] = useState<"category" | "customer" | "seller">("category");
+  const [breakdownTab, setBreakdownTab] = useState<"category" | "product" | "customer" | "seller">("category");
   const [settingsTab, setSettingsTab] = useState<"sellers" | "backup" | "integrity" | "log" | "alerts" | "payment" | "security">("sellers");
   const [nedarimConfig, setNedarimConfig] = useState<{ mosad: string; apiValid: string; formMosadId: string; formApiKey: string; formTofesId: string }>(() => {
     try {
@@ -2375,7 +2375,7 @@ export default function App() {
           const name = String(it.Name ?? "").trim();
           if (!name) continue;
           const key = it.ProductId != null ? `id:${it.ProductId}` : `name:${name}`;
-          productCandidates.set(key, { name, price: Number(it.Price) || 0, category: String(it.Category ?? "כללי"), nedarimProductId: it.ProductId });
+          productCandidates.set(key, { name, price: Number(it.Price) || 0, category: String(it.Category ?? "").trim() || "כללי", nedarimProductId: it.ProductId });
         }
       }
 
@@ -4247,9 +4247,10 @@ const importBackup = async (
                           }));
                         };
                         const cats = Array.from(new Set(detailProducts.map(p => p.category).filter(Boolean)));
+                        const uncategorizedCount = detailProducts.filter(p => !p.category).length;
                         const filtered = detailProducts.filter(p =>
                           (!productsSearch || p.name.toLowerCase().includes(productsSearch.toLowerCase()) || p.category.toLowerCase().includes(productsSearch.toLowerCase())) &&
-                          (!productsCategoryFilter || p.category === productsCategoryFilter)
+                          (!productsCategoryFilter || (productsCategoryFilter === "__none__" ? !p.category : p.category === productsCategoryFilter))
                         );
                         return (
                           <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -4267,11 +4268,12 @@ const importBackup = async (
                               })} className="cc-btn" style={btn("danger", "sm")}>מחק הכל</button>
                               <input placeholder="חיפוש..." value={productsSearch} onChange={e => setProductsSearch(e.target.value)}
                                 style={{ ...inputStyle, flex: "1 1 140px", padding: "6px 10px", fontSize: "13px" }} />
-                              {cats.length > 0 && (
+                              {(cats.length > 0 || uncategorizedCount > 0) && (
                                 <select value={productsCategoryFilter} onChange={e => setProductsCategoryFilter(e.target.value)}
                                   style={{ ...inputStyle, fontSize: "13px", padding: "6px 10px" }}>
                                   <option value="">כל הקטגוריות</option>
                                   {cats.map(c => <option key={c} value={c}>{c}</option>)}
+                                  {uncategorizedCount > 0 && <option value="__none__">⚠️ ללא קטגוריה ({uncategorizedCount})</option>}
                                 </select>
                               )}
                               <span style={{ fontSize: "13px", color: "#6b7280", whiteSpace: "nowrap" }}>{filtered.length} מוצרים</span>
@@ -6195,6 +6197,15 @@ const importBackup = async (
             });
             return acc;
           }, {});
+          const getByProduct = () => reportEntries.reduce((acc: Record<string, number>, { transaction: t }) => {
+            const gross = t.items.reduce((s, i) => s + i.price * i.qty, 0);
+            if (gross === 0) return acc;
+            const ratio = t.finalTotal / gross;
+            t.items.forEach(item => {
+              acc[item.name] = (acc[item.name] || 0) + item.price * item.qty * ratio;
+            });
+            return acc;
+          }, {});
           const getByCustomer = () => reportEntries.reduce((acc: Record<string, number>, { transaction: t }) => {
             acc[t.customerName] = (acc[t.customerName] || 0) + t.finalTotal;
             return acc;
@@ -6237,6 +6248,24 @@ const importBackup = async (
               תאריך: t.date, לקוח: t.customerName, טלפון: t.customerPhone, מוכר: t.seller, סכום: t.finalTotal,
               מוצרים: t.items.map(i => `${i.name} x${i.qty}`).join(" | "),
             }));
+            // ── פריטים שנמכרו: שורה לכל פריט בכל עסקה, עם הסכום בפועל (חשוב למוצרים במחיר פתוח) ──
+            const itemRows = reportEntries.flatMap(({ transaction: t, saleDay }) => {
+              const d = t.dateISO ? new Date(t.dateISO) : new Date(t.date);
+              const disc = t.discountPercent ?? 0;
+              const sign = t.isReturn ? -1 : 1;
+              return t.items.map(item => {
+                const product = (saleDay.products ?? []).find(p => p.id === item.id);
+                const amount = Math.round(item.price * item.qty * (1 - disc / 100) * sign * 100) / 100;
+                return {
+                  "שם מוצר": item.name,
+                  קטגוריה: product?.category ?? "לא ידוע",
+                  סכום: amount,
+                  "יום מכירה": saleDay.name,
+                  תאריך: d.toLocaleDateString("he-IL"),
+                  שעה: d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }),
+                };
+              });
+            });
             const wb = XLSX.utils.book_new();
             const rtlView = [{ rightToLeft: true, RTL: true }];
             const addSheet = (rows: object[], sheetName: string) => {
@@ -6246,6 +6275,7 @@ const importBackup = async (
               XLSX.utils.book_append_sheet(wb, ws, sheetName);
             };
             addSheet(transactionsRows, "עסקאות");
+            addSheet(itemRows, "פריטים שנמכרו");
             addSheet(custRows, "לקוחות");
             addSheet(prodRows, "מוצרים");
             addSheet(sellersRows, "מוכרים");
@@ -6370,17 +6400,20 @@ const importBackup = async (
                     .sort((a, b) => b.amount - a.amount);
                 const breakdownData =
                   breakdownTab === "category" ? buildBreakdown(getByCategory()) :
+                  breakdownTab === "product" ? buildBreakdown(getByProduct()) :
                   breakdownTab === "customer" ? buildBreakdown(getByCustomer()) :
                   buildBreakdown(getBySeller());
                 const countFor = (name: string) => breakdownTab === "seller"
                   ? reportEntries.filter(e => e.transaction.seller === name).length
                   : breakdownTab === "customer"
                   ? reportEntries.filter(e => e.transaction.customerName === name).length
+                  : breakdownTab === "product"
+                  ? reportEntries.filter(e => e.transaction.items.some(i => i.name === name)).length
                   : reportEntries.filter(e => e.saleDay.products?.find(p => p.id === e.transaction.items.find(i => i.name === name)?.id)?.category === name || e.transaction.items.some(i => (e.saleDay.products?.find(p => p.id === i.id)?.category ?? "לא ידוע") === name)).length;
                 return (
                   <div>
                     <div style={{ display: "flex", gap: "6px", marginBottom: "16px", direction: "rtl" }}>
-                      {([["category","לפי קטגוריה"],["customer","לפי לקוח"],["seller","לפי מוכר"]] as const).map(([key, label]) => (
+                      {([["category","לפי קטגוריה"],["product","לפי מוצר"],["customer","לפי לקוח"],["seller","לפי מוכר"]] as const).map(([key, label]) => (
                         <button key={key} onClick={() => setBreakdownTab(key)}
                           className="cc-btn" style={{ ...btn(breakdownTab === key ? "primary" : "secondary", "sm") }}>
                           {label}
