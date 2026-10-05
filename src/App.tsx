@@ -585,7 +585,9 @@ export default function App() {
   const [toasts, setToasts] = useState<Array<{ id: number; message: string; type: "success" | "error" | "info" | "warning" }>>([]);
 
   // ── Internal tab states ──
-  const [reportTab, setReportTab] = useState<"sales" | "breakdown" | "inventory">("sales");
+  const [reportTab, setReportTab] = useState<"sales" | "breakdown" | "items" | "inventory">("sales");
+  const [itemsReportSearch, setItemsReportSearch] = useState("");
+  const [itemsReportView, setItemsReportView] = useState<"summary" | "detail">("summary");
   const [breakdownTab, setBreakdownTab] = useState<"category" | "product" | "customer" | "seller">("category");
   const [settingsTab, setSettingsTab] = useState<"sellers" | "backup" | "integrity" | "log" | "alerts" | "payment" | "security">("sellers");
   const [nedarimConfig, setNedarimConfig] = useState<{ mosad: string; apiValid: string; formMosadId: string; formApiKey: string; formTofesId: string }>(() => {
@@ -6185,13 +6187,18 @@ const importBackup = async (
             acc[key] = (acc[key] || 0) + t.finalTotal;
             return acc;
           }, {});
+          // התאמת פריט מעסקה למוצר: קודם לפי id, ורק אם לא נמצא (למשל מוצר שנמחק/נוצר מחדש) לפי שם —
+          // כדי שפריטים ישנים שה-id שלהם לא תואם יותר למוצר הנוכחי עדיין ישוייכו לקטגוריה הנכונה
+          const findProductForItem = (saleDay: SaleDay, item: CartItem) => {
+            const dayProds = saleDay.products ?? [];
+            return dayProds.find(p => p.id === item.id) ?? dayProds.find(p => p.name === item.name);
+          };
           const getByCategory = () => reportEntries.reduce((acc: Record<string, number>, { transaction: t, saleDay }) => {
             const gross = t.items.reduce((s, i) => s + i.price * i.qty, 0);
             if (gross === 0) return acc;
             const ratio = t.finalTotal / gross;
-            const dayProds = saleDay.products ?? [];
             t.items.forEach(item => {
-              const product = dayProds.find(p => p.id === item.id);
+              const product = findProductForItem(saleDay, item);
               const cat = product?.category || "לא ידוע";
               acc[cat] = (acc[cat] || 0) + item.price * item.qty * ratio;
             });
@@ -6206,6 +6213,24 @@ const importBackup = async (
             });
             return acc;
           }, {});
+          // סיכום כמות/סכום לכל מוצר, מפוצל לפי מחיר יחידה — כך שמוצר שנמכר כל פעם במחיר אחר (מחיר פתוח)
+          // מקבל שורה נפרדת לכל נקודת מחיר, בניגוד למוצר במחיר קבוע שיקבל שורה אחת
+          const getPriceSummary = () => {
+            const map = new Map<string, { name: string; price: number; qty: number; amount: number }>();
+            reportEntries.forEach(({ transaction: t }) => {
+              const sign = t.isReturn ? -1 : 1;
+              t.items.forEach(item => {
+                const key = `${item.name}|${item.price}`;
+                const cur = map.get(key) ?? { name: item.name, price: item.price, qty: 0, amount: 0 };
+                cur.qty += item.qty * sign;
+                cur.amount += item.price * item.qty * sign;
+                map.set(key, cur);
+              });
+            });
+            return Array.from(map.values())
+              .map(r => ({ ...r, amount: Math.round(r.amount * 100) / 100 }))
+              .sort((a, b) => a.name.localeCompare(b.name, "he") || b.qty - a.qty);
+          };
           const getByCustomer = () => reportEntries.reduce((acc: Record<string, number>, { transaction: t }) => {
             acc[t.customerName] = (acc[t.customerName] || 0) + t.finalTotal;
             return acc;
@@ -6254,11 +6279,11 @@ const importBackup = async (
               const disc = t.discountPercent ?? 0;
               const sign = t.isReturn ? -1 : 1;
               return t.items.map(item => {
-                const product = (saleDay.products ?? []).find(p => p.id === item.id);
+                const product = findProductForItem(saleDay, item);
                 const amount = Math.round(item.price * item.qty * (1 - disc / 100) * sign * 100) / 100;
                 return {
                   "שם מוצר": item.name,
-                  קטגוריה: product?.category ?? "לא ידוע",
+                  קטגוריה: product?.category || "לא ידוע",
                   סכום: amount,
                   "יום מכירה": saleDay.name,
                   תאריך: d.toLocaleDateString("he-IL"),
@@ -6266,6 +6291,9 @@ const importBackup = async (
                 };
               });
             });
+            const priceSummaryRows = getPriceSummary().map(r => ({
+              "שם מוצר": r.name, "מחיר יחידה": r.price, כמות: r.qty, "סה\"כ": r.amount,
+            }));
             const wb = XLSX.utils.book_new();
             const rtlView = [{ rightToLeft: true, RTL: true }];
             const addSheet = (rows: object[], sheetName: string) => {
@@ -6276,6 +6304,7 @@ const importBackup = async (
             };
             addSheet(transactionsRows, "עסקאות");
             addSheet(itemRows, "פריטים שנמכרו");
+            addSheet(priceSummaryRows, "סיכום לפי מוצר ומחיר");
             addSheet(custRows, "לקוחות");
             addSheet(prodRows, "מוצרים");
             addSheet(sellersRows, "מוכרים");
@@ -6288,7 +6317,7 @@ const importBackup = async (
           <div style={{ background: "white", borderRadius: "20px", overflow: "hidden" }}>
             {/* ── טאבי דוחות ── */}
             <div style={{ display: "flex", borderBottom: "2px solid #f1f5f9", direction: "rtl" }}>
-              {([["sales","סקירת מכירות"],["breakdown","פילוחים"],["inventory","סיכום מלאי שנתי"]] as const).map(([key, label]) => (
+              {([["sales","סקירת מכירות"],["breakdown","פילוחים"],["items","פריטים שנמכרו"],["inventory","סיכום מלאי שנתי"]] as const).map(([key, label]) => (
                 <button key={key} onClick={() => setReportTab(key)} className="cc-underline-tab"
                   style={underlineTabBtn(reportTab === key)}>
                   {label}
@@ -6447,6 +6476,110 @@ const importBackup = async (
                         </div>
                       )
                     }
+                  </div>
+                );
+              })()}
+
+              {/* ── פריטים שנמכרו ── */}
+              {reportTab === "items" && (() => {
+                const thB: React.CSSProperties = { padding: "9px 12px", textAlign: "center", fontWeight: 700, fontSize: "13px", color: "#374151", background: "#f8fafc", borderBottom: "2px solid #e2e8f0", whiteSpace: "nowrap" };
+                const tdB: React.CSSProperties = { padding: "8px 12px", fontSize: "13px", borderBottom: "1px solid #f1f5f9" };
+                const search = itemsReportSearch.toLowerCase();
+                const summaryRows = getPriceSummary()
+                  .filter(r => !search || r.name.toLowerCase().includes(search));
+                const detailRows = reportEntries.flatMap(({ transaction: t, saleDay }) => {
+                  const d = t.dateISO ? new Date(t.dateISO) : new Date(t.date);
+                  const disc = t.discountPercent ?? 0;
+                  const sign = t.isReturn ? -1 : 1;
+                  return t.items.map(item => {
+                    const product = findProductForItem(saleDay, item);
+                    const amount = Math.round(item.price * item.qty * (1 - disc / 100) * sign * 100) / 100;
+                    return {
+                      name: item.name,
+                      category: product?.category || "לא ידוע",
+                      amount,
+                      dayName: saleDay.name,
+                      dateStr: d.toLocaleDateString("he-IL"),
+                      timeStr: d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }),
+                      ts: d.getTime(),
+                    };
+                  });
+                })
+                  .filter(r => !search || r.name.toLowerCase().includes(search) || r.category.toLowerCase().includes(search))
+                  .sort((a, b) => b.ts - a.ts);
+                return (
+                  <div>
+                    <div style={{ display: "flex", gap: "10px", marginBottom: "16px", flexWrap: "wrap", alignItems: "center" }}>
+                      <div style={{ display: "flex", gap: "6px" }}>
+                        {([["summary","סיכום לפי מוצר ומחיר"],["detail","פירוט מלא"]] as const).map(([key, label]) => (
+                          <button key={key} onClick={() => setItemsReportView(key)}
+                            className="cc-btn" style={{ ...btn(itemsReportView === key ? "primary" : "secondary", "sm") }}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <input placeholder="חיפוש לפי שם מוצר..." value={itemsReportSearch} onChange={e => setItemsReportSearch(e.target.value)}
+                        style={{ ...inputStyle, maxWidth: "280px" }} />
+                    </div>
+                    {itemsReportView === "summary" ? (
+                      summaryRows.length === 0
+                      ? <div style={{ color: "#9ca3af", fontSize: "14px", padding: "24px", textAlign: "center" }}>אין נתונים</div>
+                      : (
+                        <div style={{ overflowX: "auto", maxHeight: "65vh", overflowY: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", direction: "rtl" }}>
+                            <thead>
+                              <tr>
+                                <th style={thB}>שם מוצר</th>
+                                <th style={{ ...thB, textAlign: "center" }}>מחיר יחידה</th>
+                                <th style={{ ...thB, textAlign: "center" }}>כמות</th>
+                                <th style={{ ...thB, textAlign: "center" }}>סה"כ</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {summaryRows.map((row, i) => (
+                                <tr key={`${row.name}|${row.price}`} style={{ borderBottom: "1px solid #f1f5f9", background: i % 2 === 0 ? "white" : "#fafafa" }}>
+                                  <td style={{ ...tdB, fontWeight: 600 }}>{row.name}</td>
+                                  <td style={{ ...tdB, textAlign: "center" }}>₪{row.price.toFixed(2)}</td>
+                                  <td style={{ ...tdB, textAlign: "center" }}>{row.qty}</td>
+                                  <td style={{ ...tdB, textAlign: "center", fontWeight: 700, color: row.amount < 0 ? "#dc2626" : "#1e40af" }}>₪{row.amount.toFixed(2)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    ) : (
+                      detailRows.length === 0
+                      ? <div style={{ color: "#9ca3af", fontSize: "14px", padding: "24px", textAlign: "center" }}>אין נתונים</div>
+                      : (
+                        <div style={{ overflowX: "auto", maxHeight: "65vh", overflowY: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", direction: "rtl" }}>
+                            <thead>
+                              <tr>
+                                <th style={thB}>שם מוצר</th>
+                                <th style={thB}>קטגוריה</th>
+                                <th style={{ ...thB, textAlign: "center" }}>סכום</th>
+                                {isAllDays && <th style={thB}>יום מכירה</th>}
+                                <th style={thB}>תאריך</th>
+                                <th style={thB}>שעה</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {detailRows.map((row, i) => (
+                                <tr key={i} style={{ borderBottom: "1px solid #f1f5f9", background: i % 2 === 0 ? "white" : "#fafafa" }}>
+                                  <td style={{ ...tdB, fontWeight: 600 }}>{row.name}</td>
+                                  <td style={tdB}>{row.category}</td>
+                                  <td style={{ ...tdB, textAlign: "center", fontWeight: 700, color: row.amount < 0 ? "#dc2626" : "#1e40af" }}>₪{row.amount.toFixed(2)}</td>
+                                  {isAllDays && <td style={tdB}>{row.dayName}</td>}
+                                  <td style={tdB}>{row.dateStr}</td>
+                                  <td style={tdB}>{row.timeStr}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    )}
                   </div>
                 );
               })()}
