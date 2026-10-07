@@ -4949,9 +4949,10 @@ const importBackup = async (
                         const txs = detailDay.transactions ?? [];
                         const sales = txs.filter(t => !t.isReturn);
                         const returns = txs.filter(t => t.isReturn);
-                        const grossTotal = sales.reduce((s, t) => s + t.finalTotal, 0);
+                        const grossTotal = sales.reduce((s, t) => s + t.total, 0);
+                        const netSalesTotal = sales.reduce((s, t) => s + t.finalTotal, 0);
                         const returnTotal = returns.reduce((s, t) => s + t.finalTotal, 0);
-                        const netTotal = grossTotal + returnTotal;
+                        const netTotal = netSalesTotal + returnTotal;
                         const totalItems = sales.reduce((s, t) => s + t.items.reduce((ss, i) => ss + i.qty, 0), 0);
                         const listCount = detailDay.type === "preorder" ? (detailDay.preOrders ?? []).length : (detailDay.customers ?? []).length;
                         const byMethod: Record<string, number> = {};
